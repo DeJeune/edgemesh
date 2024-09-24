@@ -230,6 +230,10 @@ github.com/hashicorp/go-multierror
 # github.com/hashicorp/golang-lru v0.5.4
 ## explicit; go 1.12
 github.com/hashicorp/golang-lru/simplelru
+# github.com/hashicorp/golang-lru/v2 v2.0.2
+## explicit; go 1.18
+github.com/hashicorp/golang-lru/v2
+github.com/hashicorp/golang-lru/v2/simplelru
 # github.com/huin/goupnp v1.2.0
 ## explicit; go 1.14
 github.com/huin/goupnp
@@ -377,6 +381,7 @@ github.com/libp2p/go-libp2p/core/sec
 github.com/libp2p/go-libp2p/core/sec/insecure
 github.com/libp2p/go-libp2p/core/sec/insecure/pb
 github.com/libp2p/go-libp2p/core/transport
+github.com/libp2p/go-libp2p/p2p/discovery/backoff
 github.com/libp2p/go-libp2p/p2p/discovery/mdns
 github.com/libp2p/go-libp2p/p2p/discovery/routing
 github.com/libp2p/go-libp2p/p2p/discovery/util
@@ -439,6 +444,11 @@ github.com/libp2p/go-libp2p-kad-dht/rtrefresh
 github.com/libp2p/go-libp2p-kbucket
 github.com/libp2p/go-libp2p-kbucket/keyspace
 github.com/libp2p/go-libp2p-kbucket/peerdiversity
+# github.com/libp2p/go-libp2p-pubsub v0.9.3
+## explicit; go 1.19
+github.com/libp2p/go-libp2p-pubsub
+github.com/libp2p/go-libp2p-pubsub/pb
+github.com/libp2p/go-libp2p-pubsub/timecache
 # github.com/libp2p/go-libp2p-record v0.2.0
 ## explicit; go 1.17
 github.com/libp2p/go-libp2p-record

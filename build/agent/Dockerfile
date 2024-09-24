@@ -1,17 +1,23 @@
-FROM golang:1.19 AS builder
+FROM swr.cn-north-4.myhuaweicloud.com/cloud-native-riscv64/golang:1.19 AS builder
 
 ARG GO_LDFLAGS
 ARG TARGETARCH
 
 WORKDIR /code
+
+# Copy the entire repository
 COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH GO_LDFLAGS=$GO_LDFLAGS make WHAT=edgemesh-agent
 
+FROM swr.cn-north-4.myhuaweicloud.com/cloud-native-riscv64/alpine:edge
 
-FROM alpine:3.11
+# 添加中国的Alpine镜像源
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories
 
-RUN apk update && apk --no-cache add iptables && apk --no-cache add dpkg
+# Install iptables and other necessary packages
+RUN apk update && \
+    apk add --no-cache iptables iptables-legacy dpkg bash
 
 COPY --from=builder /code/_output/local/bin/edgemesh-agent /usr/local/bin/edgemesh-agent
 

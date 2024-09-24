@@ -1,7 +1,11 @@
 package validation
 
 import (
+	"fmt"
+	"os"
+	"path"
 	"path/filepath"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
@@ -86,6 +90,23 @@ func ValidateModuleEdgeCNI(c *v1alpha1.EdgeCNIConfig) field.ErrorList {
 
 	allErrs := field.ErrorList{}
 
+	return allErrs
+}
+
+func ValidateModuleEdgeMeshServer(c *v1alpha1.MeshServer) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if !strings.HasPrefix(strings.ToLower(c.Server), "unix://") {
+		allErrs = append(allErrs, field.Invalid(field.NewPath("address"),
+			c.Server, "unixSocketAddress must has prefix unix://"))
+	}
+	s := strings.SplitN(c.Server, "://", 2)
+	if len(s) > 1 && !utilvalidation.FileIsExist(path.Dir(s[1])) {
+		if err := os.MkdirAll(path.Dir(s[1]), os.ModePerm); err != nil {
+			allErrs = append(allErrs, field.Invalid(field.NewPath("address"),
+				c.Server, fmt.Sprintf("create unixSocketAddress %v dir %v error: %v",
+					c.Server, path.Dir(s[1]), err)))
+		}
+	}
 	return allErrs
 }
 

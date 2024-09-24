@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"os"
 	"path"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -55,7 +56,7 @@ func newDefaultEdgeTunnelConfig(configPath string) *EdgeTunnelConfig {
 		Rendezvous:      defaults.Rendezvous,
 		EnableIpfsLog:   false,
 		MaxCandidates:   15,
-		HeartbeatPeriod: 120,
+		HeartbeatPeriod: 15,
 		FinderPeriod:    60,
 		PSK: &PSK{
 			Enable: true,
@@ -75,6 +76,7 @@ func newDefaultEdgeTunnelConfig(configPath string) *EdgeTunnelConfig {
 			Enable: false,
 			Port:   9999,
 		},
+		NodeInactiveThreshold: 5 * time.Second,
 	}
 }
 
@@ -130,8 +132,9 @@ func NewDefaultEdgeMeshAgentConfig(configPath string) *EdgeMeshAgentConfig {
 				},
 				LoadBalancer: defaultLoadBalancerConfig,
 			},
-			EdgeTunnelConfig: newDefaultEdgeTunnelConfig(configPath),
-			EdgeCNIConfig:    newDefaultEdgeCNIConfig(),
+			EdgeTunnelConfig:     newDefaultEdgeTunnelConfig(configPath),
+			EdgeCNIConfig:        newDefaultEdgeCNIConfig(),
+			EdgeMeshServerConfig: newDefaultEdgeMeshServerConfig(),
 		},
 	}
 
@@ -161,6 +164,13 @@ func NewDefaultEdgeMeshGatewayConfig(configPath string) *EdgeMeshGatewayConfig {
 
 	preConfigGateway(c, DetectRunningMode())
 	return c
+}
+
+func newDefaultEdgeMeshServerConfig() *MeshServer {
+	return &MeshServer{
+		Enable: true,
+		Server: defaults.MeshServerAddress,
+	}
 }
 
 // DetectRunningMode detects whether the container is running on cloud node or edge node.

@@ -13,9 +13,9 @@
 # limitations under the License.
 
 GOPATH?=$(shell go env GOPATH)
-IMAGE_REPO ?= kubeedge
-ARCH ?= amd64
-IMAGE_TAG ?= $(shell git describe --tags)
+IMAGE_REPO ?= swr.cn-north-4.myhuaweicloud.com/cloud-native-riscv64
+ARCH ?= amd64,riscv64
+IMAGE_TAG ?= latest
 GO_LDFLAGS='$(shell hack/make-rules/version.sh)'
 
 # make all builds both agent and server binaries
@@ -25,7 +25,7 @@ BINARIES=edgemesh-agent \
 
 # the env PLATFORMS defines to generate linux images for amd 64-bit, arm 64-bit and armv7 architectures
 # the full list of PLATFORMS is linux/amd64,linux/arm64,linux/arm/v7
-PLATFORMS ?= linux/amd64,linux/arm64,linux/arm/v7
+PLATFORMS ?= linux/amd64,linux/riscv64
 COMPONENTS=agent \
            gateway
 
@@ -61,12 +61,12 @@ all: verify-golang
 	EDGEMESH_OUTPUT_SUBPATH=$(OUT_DIR) hack/make-rules/build.sh $(WHAT)
 endif
 
-.PHONY: docker-cross-build
+.PHONY: nerdctl-cross-build
 ifeq ($(HELP),y)
-docker-cross-build:
-	@echo "docker cross build for $${COMPONENTS} in platform $${PLATFORMS}"
+nerdctl-cross-build:
+	@echo "nerdctl cross build for $${COMPONENTS} in platform $${PLATFORMS}"
 else
-docker-cross-build:
+nerdctl-cross-build:
 	hack/make-rules/cross-build.sh
 endif
 
@@ -169,7 +169,7 @@ endif
 .PHONY: images agentimage gatewayimage
 images: agentimage gatewayimage
 agentimage gatewayimage:
-	docker build --build-arg GO_LDFLAGS=${GO_LDFLAGS} -t kubeedge/edgemesh-${@:image=}:${IMAGE_TAG} -f build/${@:image=}/Dockerfile .
+	nerdctl build --build-arg GO_LDFLAGS=${GO_LDFLAGS} -t kubeedge/edgemesh-${@:image=}:${IMAGE_TAG} -f build/${@:image=}/Dockerfile .
 
 
 .PHONY: push push-all push-multi-platform-images
@@ -177,7 +177,7 @@ push-all: push-multi-platform-images
 
 # push target pushes edgemesh-built images
 push: images
-	for target in $(COMPONENTS); do docker push ${IMAGE_REPO}/edgemesh-$$target:${IMAGE_TAG}; done
+	for target in $(COMPONENTS); do nerdctl push ${IMAGE_REPO}/edgemesh-$$target:${IMAGE_TAG}; done
 
 # push multi-platform images
 push-multi-platform-images:

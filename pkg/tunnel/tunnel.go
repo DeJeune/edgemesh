@@ -2,11 +2,14 @@ package tunnel
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net"
 	"net/http"
+	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	ocprom "contrib.go.opencensus.io/exporter/prometheus"
@@ -24,6 +27,7 @@ import (
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"github.com/libp2p/go-libp2p/p2p/host/resource-manager/obs"
 	relayv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
+	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	"github.com/libp2p/go-msgio/protoio"
 	ma "github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
@@ -32,12 +36,14 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/yaml"
 
+	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
+	"github.com/kubeedge/beehive/pkg/core/model"
 	"github.com/kubeedge/edgemesh/pkg/apis/config/defaults"
 	"github.com/kubeedge/edgemesh/pkg/apis/config/v1alpha1"
 	discoverypb "github.com/kubeedge/edgemesh/pkg/tunnel/pb/discovery"
 	proxypb "github.com/kubeedge/edgemesh/pkg/tunnel/pb/proxy"
 	netutil "github.com/kubeedge/edgemesh/pkg/util/net"
-	"github.com/kubeedge/edgemesh/pkg/util/tunutils"
+	cni "github.com/kubeedge/edgemesh/pkg/util/tunutils"
 )
 
 const (
@@ -186,6 +192,8 @@ func (t *EdgeTunnel) discovery(discoverType defaults.DiscoveryType, pi peer.Addr
 		klog.Errorf("[%s] Read response msg from %s err: %v", discoverType, pi, err)
 		return
 	}
+	currentTime := time.Now().Format("2006-01-02 15:04:05.000")
+	klog.Infof("receive msg in %s", currentTime)
 	msgType := msg.GetType()
 	if msgType != discoverypb.Discovery_SUCCESS {
 		klog.Errorf("[%s] Failed to build stream between %s, Type is %s, err: %v", discoverType, pi, msg.GetType(), err)
@@ -194,9 +202,106 @@ func (t *EdgeTunnel) discovery(discoverType defaults.DiscoveryType, pi peer.Addr
 
 	// (re)mapping nodeName and peerID
 	nodeName := msg.GetNodeName()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	nodeInfo, exists := t.nodePeerMap[nodeName]
+	if !exists {
+		// New node joining
+		nodeInfo = &NodeInfo{
+			PeerID:   pi.ID,
+			Status:   NodeStatusActive,
+			LastSeen: time.Now(),
+		}
+		t.nodePeerMap[nodeName] = nodeInfo
+		t.nodeEventChan <- NodeEvent{EventName: EventNodeJoined, NodeName: nodeName, NodeEventInfo: *nodeInfo}
+	} else {
+		// Existing node
+		nodeInfo.LastSeen = time.Now()
+		if nodeInfo.Status == NodeStatusInactive {
+			// Node rejoining
+			nodeInfo.Status = NodeStatusActive
+			nodeInfo.LastSeen = time.Now()
+			t.nodeEventChan <- NodeEvent{EventName: EventNodeJoined, NodeName: nodeName, NodeEventInfo: *nodeInfo}
+		} else {
+			// Node already active, just update LastSeen
+			nodeInfo.LastSeen = time.Now()
+		}
+		t.nodePeerMap[nodeName] = nodeInfo
+	}
 	klog.Infof("[%s] Discovery to %s : %s", protocol, nodeName, pi)
-	t.nodePeerMap[nodeName] = pi.ID
 }
+
+func (t *EdgeTunnel) checkNodeStatus() {
+	now := time.Now()
+	t.mu.Lock() // 使用互斥锁保护共享数据
+
+	var events []NodeEvent
+
+	for nodeName, nodeInfo := range t.nodePeerMap {
+		if nodeInfo.Status == NodeStatusActive {
+			if !t.isNodeReachable(nodeInfo.PeerID) {
+				nodeInfo.Status = NodeStatusInactive
+				nodeInfo.LastSeen = now
+				t.nodePeerMap[nodeName] = nodeInfo
+				events = append(events, NodeEvent{EventName: EventNodeLeft, NodeName: nodeName, NodeEventInfo: *nodeInfo})
+			}
+		} else if nodeInfo.Status == NodeStatusInactive {
+			if t.isNodeReachable(nodeInfo.PeerID) {
+				nodeInfo.Status = NodeStatusActive
+				nodeInfo.LastSeen = now
+				t.nodePeerMap[nodeName] = nodeInfo
+				events = append(events, NodeEvent{EventName: EventNodeJoined, NodeName: nodeName, NodeEventInfo: *nodeInfo})
+			}
+		}
+	}
+
+	t.mu.Unlock()
+
+	// 异步发送事件
+	go func() {
+		for _, e := range events {
+			t.nodeEventChan <- e
+		}
+	}()
+}
+
+func (t *EdgeTunnel) isNodeReachable(peerID peer.ID) bool {
+	ctx, cancel := context.WithTimeout(t.hostCtx, 3*time.Second)
+	defer cancel()
+
+	// 使用 libp2p 的 ping 协议
+	p := ping.NewPingService(t.p2pHost)
+	select {
+	case res := <-p.Ping(ctx, peerID):
+		return res.Error == nil
+	case <-ctx.Done():
+		// 如果 ping 超时，尝试建立新的 libp2p 流
+		streamCtx, streamCancel := context.WithTimeout(t.hostCtx, 2*time.Second)
+		defer streamCancel()
+		_, err := t.p2pHost.NewStream(streamCtx, peerID, "/ping/1.0.0")
+		return err == nil
+	}
+}
+
+// func (t *EdgeTunnel) checkTCPConnection(peerID peer.ID) bool {
+// 	peerInfo := t.p2pHost.Peerstore().PeerInfo(peerID)
+// 	if len(peerInfo.Addrs) == 0 {
+// 		return false
+// 	}
+
+// 	for _, addr := range peerInfo.Addrs {
+// 		if ipAddr, err := addr.ValueForProtocol(ma.P_IP4); err == nil {
+// 			conn, err := net.DialTimeout("tcp", ipAddr+":"+strconv.Itoa(t.Config.ListenPort), 5*time.Second)
+// 			if err == nil {
+// 				conn.Close()
+// 				return true
+// 			}
+// 		}
+// 	}
+
+// 	return false
+// }
 
 // discoveryStreamHandler handles incoming streams for discovery service.
 // It reads the handshake message from the incoming stream and writes a response message,
@@ -237,7 +342,24 @@ func (t *EdgeTunnel) discoveryStreamHandler(stream network.Stream) {
 
 	// (re)mapping nodeName and peerID
 	klog.Infof("[%s] Discovery from %s : %s", protocol, nodeName, remotePeer)
-	t.nodePeerMap[nodeName] = remotePeer.ID
+	nodeInfo, exists := t.nodePeerMap[nodeName]
+	if !exists {
+		nodeInfo = &NodeInfo{
+			PeerID:   remotePeer.ID,
+			Status:   NodeStatusActive,
+			LastSeen: time.Now(),
+		}
+		t.nodePeerMap[nodeName] = nodeInfo
+		t.nodeEventChan <- NodeEvent{EventName: EventNodeJoined, NodeName: nodeName, NodeEventInfo: *nodeInfo}
+	} else if nodeInfo.Status == NodeStatusInactive {
+		nodeInfo.Status = NodeStatusActive
+		nodeInfo.LastSeen = time.Now()
+		t.nodePeerMap[nodeName] = nodeInfo
+		t.nodeEventChan <- NodeEvent{EventName: EventNodeJoined, NodeName: nodeName, NodeEventInfo: *nodeInfo}
+	} else {
+		nodeInfo.LastSeen = time.Now()
+		t.nodePeerMap[nodeName] = nodeInfo
+	}
 }
 
 type ProxyOptions struct {
@@ -258,35 +380,47 @@ func (t *EdgeTunnel) GetProxyStream(opts ProxyOptions) (*StreamConn, error) {
 	var err error
 
 	destName := opts.NodeName
-	destID, exists := t.nodePeerMap[destName]
+	nodeInfo, exists := t.nodePeerMap[destName]
 	if !exists {
-		destID, err = PeerIDFromString(destName)
+		klog.Warningf("Node %s not found in nodePeerMap, attempting to generate peer ID", destName)
+		destID, err := PeerIDFromString(destName)
 		if err != nil {
-			return nil, fmt.Errorf("failed to generate peer id for %s err: %w", destName, err)
+			return nil, fmt.Errorf("failed to generate peer id for %s: %w", destName, err)
 		}
 		destInfo = peer.AddrInfo{ID: destID, Addrs: []ma.Multiaddr{}}
-		// mapping nodeName and peerID
-		klog.Infof("Could not find peer %s in cache, auto generate peer info: %s", destName, destInfo)
-		t.nodePeerMap[destName] = destID
+		klog.Infof("Generated peer info for %s: %s", destName, destInfo)
+		nodeInfo = &NodeInfo{
+			PeerID:   destID,
+			Status:   NodeStatusActive,
+			LastSeen: time.Now(),
+		}
+		t.nodePeerMap[destName] = nodeInfo
+		t.nodeEventChan <- NodeEvent{
+			EventName:     EventNodeJoined,
+			NodeName:      destName,
+			NodeEventInfo: *nodeInfo,
+		}
 	} else {
-		destInfo = t.p2pHost.Peerstore().PeerInfo(destID)
+		nodeInfo.LastSeen = time.Now()
+		destInfo = t.p2pHost.Peerstore().PeerInfo(nodeInfo.PeerID)
 	}
+
 	if err = AddCircuitAddrsToPeer(&destInfo, t.relayMap); err != nil {
-		return nil, fmt.Errorf("failed to add circuit addrs to peer %s", destInfo)
+		return nil, fmt.Errorf("failed to add circuit addrs to peer %s: %w", destInfo, err)
 	}
 	t.p2pHost.Peerstore().AddAddrs(destInfo.ID, destInfo.Addrs, peerstore.PermanentAddrTTL)
 
-	stream, err := t.p2pHost.NewStream(network.WithUseTransient(t.hostCtx, "relay"), destID, defaults.ProxyProtocol)
+	klog.Infof("Attempting to open stream to %s (%s)", destName, destInfo.ID)
+	stream, err := t.p2pHost.NewStream(network.WithUseTransient(t.hostCtx, "relay"), nodeInfo.PeerID, defaults.ProxyProtocol)
 	if err != nil {
-		return nil, fmt.Errorf("new stream between %s: %s err: %w", destName, destInfo, err)
+		return nil, fmt.Errorf("failed to open new stream to %s (%s): %w", destName, destInfo.ID, err)
 	}
-	klog.Infof("New stream between peer %s: %s success", destName, destInfo)
-	// defer stream.Close() // will close the stream elsewhere
+	klog.Infof("Successfully opened stream to %s (%s)", destName, destInfo.ID)
 
 	streamWriter := protoio.NewDelimitedWriter(stream)
 	streamReader := protoio.NewDelimitedReader(stream, MaxReadSize)
 
-	// handshake with dest peer
+	// Handshake with dest peer
 	msg := &proxypb.Proxy{
 		Type:     proxypb.Proxy_CONNECT.Enum(),
 		Protocol: &opts.Protocol,
@@ -295,33 +429,22 @@ func (t *EdgeTunnel) GetProxyStream(opts ProxyOptions) (*StreamConn, error) {
 		Port:     &opts.Port,
 	}
 	if err = streamWriter.WriteMsg(msg); err != nil {
-		resetErr := stream.Reset()
-		if resetErr != nil {
-			return nil, fmt.Errorf("stream between %s reset err: %w", opts.NodeName, resetErr)
-		}
-		return nil, fmt.Errorf("write conn msg to %s err: %w", opts.NodeName, err)
+		stream.Reset()
+		return nil, fmt.Errorf("failed to write handshake message to %s: %w", opts.NodeName, err)
 	}
 
-	// read response
+	// Read response
 	msg.Reset()
 	if err = streamReader.ReadMsg(msg); err != nil {
-		resetErr := stream.Reset()
-		if resetErr != nil {
-			return nil, fmt.Errorf("stream between %s reset err: %w", opts.NodeName, resetErr)
-		}
-		return nil, fmt.Errorf("read conn result msg from %s err: %w", opts.NodeName, err)
+		stream.Reset()
+		return nil, fmt.Errorf("failed to read handshake response from %s: %w", opts.NodeName, err)
 	}
 	if msg.GetType() == proxypb.Proxy_FAILED {
-		resetErr := stream.Reset()
-		if resetErr != nil {
-			return nil, fmt.Errorf("stream between %s reset err: %w", opts.NodeName, err)
-		}
-		return nil, fmt.Errorf("libp2p dial %v err: Proxy.type is %s", opts, msg.GetType())
+		stream.Reset()
+		return nil, fmt.Errorf("proxy connection to %s failed: remote node returned FAILED status", opts.NodeName)
 	}
 
-	msg.Reset()
-	klog.V(4).Infof("libp2p dial %v success", opts)
-
+	klog.V(4).Infof("Successfully established proxy connection to %s (%s:%d)", opts.NodeName, opts.IP, opts.Port)
 	return NewStreamConn(stream), nil
 }
 
@@ -339,11 +462,11 @@ func (t *EdgeTunnel) proxyStreamHandler(stream network.Stream) {
 	msg := new(proxypb.Proxy)
 	err := streamReader.ReadMsg(msg)
 	if err != nil {
-		klog.Errorf("Read msg from %s err: %v", remotePeer, err)
+		klog.Errorf("Failed to read handshake message from %s: %v", remotePeer, err)
 		return
 	}
 	if msg.GetType() != proxypb.Proxy_CONNECT {
-		klog.Errorf("Read msg from %s type should be CONNECT", remotePeer)
+		klog.Errorf("Unexpected message type from %s: expected CONNECT, got %s", remotePeer, msg.GetType())
 		return
 	}
 	targetProto := msg.GetProtocol()
@@ -352,9 +475,10 @@ func (t *EdgeTunnel) proxyStreamHandler(stream network.Stream) {
 	targetPort := msg.GetPort()
 	targetAddr := fmt.Sprintf("%s:%d", targetIP, targetPort)
 
+	klog.Infof("Attempting to dial endpoint: %s %s:%d", targetProto, targetIP, targetPort)
 	proxyConn, err := tryDialEndpoint(targetProto, targetIP, int(targetPort))
 	if err != nil {
-		klog.Errorf("l4 proxy connect to %v err: %v", msg, err)
+		klog.Errorf("Failed to connect to endpoint %s %s: %v", targetProto, targetAddr, err)
 		msg.Reset()
 		msg.Type = proxypb.Proxy_FAILED.Enum()
 		if err = streamWriter.WriteMsg(msg); err != nil {
@@ -380,7 +504,7 @@ func (t *EdgeTunnel) proxyStreamHandler(stream network.Stream) {
 	case UDP:
 		go netutil.ProxyConnUDP(streamConn, proxyConn.(*net.UDPConn))
 	}
-	klog.Infof("Success proxy for {%s %s %s}", targetProto, targetNode, targetAddr)
+	klog.Infof("Successfully established proxy for {%s %s %s}", targetProto, targetNode, targetAddr)
 }
 
 // tryDialEndpoint tries to dial to an endpoint with given protocol, ip and port.
@@ -388,34 +512,38 @@ func (t *EdgeTunnel) proxyStreamHandler(stream network.Stream) {
 // If neither TCP nor UDP is used, it returns an error with an unsupported protocol message.
 // when maximum retries are reached for the given protocol, it logs the error and returns it.
 func tryDialEndpoint(protocol, ip string, port int) (conn net.Conn, err error) {
-	switch protocol {
-	case TCP:
-		for i := 0; i < DailRetryTime; i++ {
-			conn, err = net.DialTCP(TCP, nil, &net.TCPAddr{
-				IP:   net.ParseIP(ip),
-				Port: port,
-			})
-			if err == nil {
-				return conn, nil
-			}
-			time.Sleep(DailSleepTime)
+	addr := fmt.Sprintf("%s:%d", ip, port)
+	klog.Infof("Attempting to dial %s %s", protocol, addr)
+
+	var dialErr error
+	for i := 0; i < DailRetryTime; i++ {
+		conn, dialErr = net.DialTimeout(protocol, addr, 5*time.Second)
+		if dialErr == nil {
+			klog.Infof("Successfully connected to %s %s", protocol, addr)
+			return conn, nil
 		}
-	case UDP:
-		for i := 0; i < DailRetryTime; i++ {
-			conn, err = net.DialUDP(UDP, nil, &net.UDPAddr{
-				IP:   net.ParseIP(ip),
-				Port: int(port),
-			})
-			if err == nil {
-				return conn, nil
+
+		// Check for specific error types
+		if opErr, ok := dialErr.(*net.OpError); ok {
+			if syscallErr, ok := opErr.Err.(*os.SyscallError); ok {
+				if syscallErr.Err == syscall.ECONNREFUSED {
+					klog.Errorf("Connection refused to %s %s (attempt %d/%d): service may not be running or port may be blocked",
+						protocol, addr, i+1, DailRetryTime)
+				} else {
+					klog.Warningf("Failed to connect to %s %s (attempt %d/%d): %v",
+						protocol, addr, i+1, DailRetryTime, dialErr)
+				}
 			}
-			time.Sleep(DailSleepTime)
+		} else {
+			klog.Warningf("Failed to connect to %s %s (attempt %d/%d): %v",
+				protocol, addr, i+1, DailRetryTime, dialErr)
 		}
-	default:
-		return nil, fmt.Errorf("unsupported protocol: %s", protocol)
+
+		time.Sleep(DailSleepTime)
 	}
-	klog.Errorf("max retries for dial")
-	return nil, err
+
+	klog.Errorf("Max retries reached for dialing %s %s", protocol, addr)
+	return nil, fmt.Errorf("failed to connect to %s %s after %d attempts: %v", protocol, addr, DailRetryTime, dialErr)
 }
 
 // BootstrapConnect tries to connect to a list of bootstrap peers in a relay map.
@@ -484,8 +612,8 @@ func newDHT(ctx context.Context, host p2phost.Host, relayPeers RelayMap) (*dual.
 }
 
 func (t *EdgeTunnel) nodeNameFromPeerID(id peer.ID) (string, bool) {
-	for nodeName, peerID := range t.nodePeerMap {
-		if peerID == id {
+	for nodeName, nodeInfo := range t.nodePeerMap {
+		if nodeInfo.PeerID == id {
 			return nodeName, true
 		}
 	}
@@ -561,6 +689,7 @@ func (t *EdgeTunnel) runHeartbeat() {
 		// We make the return value of ConditionFunc, such as bool to return false,
 		// and err to return to nil, to ensure that we can continuously execute
 		// the ConditionFunc.
+		t.checkNodeStatus()
 		return false, nil
 	}, t.stopCh)
 	if err != nil {
@@ -704,6 +833,11 @@ func (t *EdgeTunnel) Run() {
 	go t.runMdnsDiscovery()
 	go t.runDhtDiscovery()
 	go t.runConfigWatcher()
+	go t.broadcastMessage()
+	go t.handleIncomingMessages()
+	go t.checkNodeStatus()
+	go t.handleNodeEvents()
+	t.setupConnectionManager()
 	t.runHeartbeat()
 }
 
@@ -734,25 +868,31 @@ func (t *EdgeTunnel) GetCNIAdapterStream(opts ProxyOptions) (*StreamConn, error)
 	var err error
 
 	destName := opts.NodeName
-	destID, exists := t.nodePeerMap[destName]
+	nodeInfo, exists := t.nodePeerMap[destName]
 	if !exists {
-		destID, err = PeerIDFromString(destName)
+		destID, err := PeerIDFromString(destName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate peer id for %s err: %w", destName, err)
 		}
 		destInfo = peer.AddrInfo{ID: destID, Addrs: []ma.Multiaddr{}}
 		// mapping nodeName and peerID
 		klog.Infof("[CNI]Could not find peer %s in cache, auto generate peer info: %s", destName, destInfo)
-		t.nodePeerMap[destName] = destID
+		nodeInfo = &NodeInfo{
+			PeerID:   destID,
+			Status:   NodeStatusActive,
+			LastSeen: time.Now(),
+		}
+		t.nodePeerMap[destName] = nodeInfo
+		t.nodeEventChan <- NodeEvent{EventName: EventNodeJoined, NodeName: destName, NodeEventInfo: *nodeInfo}
 	} else {
-		destInfo = t.p2pHost.Peerstore().PeerInfo(destID)
+		destInfo = t.p2pHost.Peerstore().PeerInfo(nodeInfo.PeerID)
 	}
 	if err = AddCircuitAddrsToPeer(&destInfo, t.relayMap); err != nil {
 		return nil, fmt.Errorf("failed to add circuit addrs to peer %s", destInfo)
 	}
 	t.p2pHost.Peerstore().AddAddrs(destInfo.ID, destInfo.Addrs, peerstore.PermanentAddrTTL)
 
-	stream, err := t.p2pHost.NewStream(network.WithUseTransient(t.hostCtx, "relay"), destID, defaults.CNIProtocol)
+	stream, err := t.p2pHost.NewStream(network.WithUseTransient(t.hostCtx, "relay"), nodeInfo.PeerID, defaults.CNIProtocol)
 	if err != nil {
 		return nil, fmt.Errorf("new stream between %s: %s err: %w", destName, destInfo, err)
 	}
@@ -859,3 +999,385 @@ func (t *EdgeTunnel) CNIAdapterStreamHandler(stream network.Stream) {
 	go cni.DialTun(streamConn, defaults.TunDeviceName)
 	klog.Infof("[CNI]Success proxy CNI data for {%s %s %s}", targetProto, targetNode, targetAddr)
 }
+
+func (t *EdgeTunnel) setupConnectionManager() {
+	klog.Infof("setupConnectionManager started")
+	t.p2pHost.Network().Notify(&network.NotifyBundle{
+		DisconnectedF: func(n network.Network, conn network.Conn) {
+			t.handleDisconnection(conn.RemotePeer())
+			t.checkNodeStatus() // 添加这行
+		},
+		ConnectedF: func(n network.Network, conn network.Conn) {
+			t.checkNodeStatus() // 添加这行
+		},
+	})
+}
+
+func (t *EdgeTunnel) handleDisconnection(peerID peer.ID) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	for nodeName, nodeInfo := range t.nodePeerMap {
+		if nodeInfo.PeerID == peerID {
+			nodeInfo.Status = NodeStatusInactive
+			t.nodePeerMap[nodeName] = nodeInfo
+			go func(name string, info NodeInfo) {
+				t.nodeEventChan <- NodeEvent{EventName: EventNodeLeft, NodeName: name, NodeEventInfo: info}
+			}(nodeName, *nodeInfo)
+			break
+		}
+	}
+}
+
+// func (t *EdgeTunnel) GetDirectStream(destName string, message []byte) ([]byte, error) {
+// 	var destInfo peer.AddrInfo
+// 	var err error
+
+// 	nodeInfo := t.nodePeerMap[destName]
+// 	_, exists := t.activeNodes[destName]
+// 	if !exists {
+// 		destID, err := PeerIDFromString(destName)
+// 		if err != nil {
+// 			return nil, fmt.Errorf("failed to generate peer id for %s err: %w", destName, err)
+// 		}
+// 		destInfo = peer.AddrInfo{ID: destID, Addrs: []ma.Multiaddr{}}
+// 		// mapping nodeName and peerID
+// 		klog.Infof("Could not find peer %s in cache, auto generate peer info: %s", destName, destInfo)
+// 		nodeInfo = &NodeInfo{
+// 			PeerID:   destID,
+// 			Status:   NodeStatusActive,
+// 			LastSeen: time.Now(),
+// 		}
+// 		t.nodePeerMap[destName] = nodeInfo
+// 		t.activeNodes[destName] = true
+// 		t.nodeEventChan <- NodeEvent{
+// 			EventName:     EventNodeJoined,
+// 			NodeName:      destName,
+// 			NodeEventInfo: *nodeInfo,
+// 		}
+// 	} else {
+// 		destInfo = t.p2pHost.Peerstore().PeerInfo(nodeInfo.PeerID)
+// 	}
+// 	if err = AddCircuitAddrsToPeer(&destInfo, t.relayMap); err != nil {
+// 		return nil, fmt.Errorf("failed to add circuit addrs to peer %s", destInfo)
+// 	}
+// 	t.p2pHost.Peerstore().AddAddrs(destInfo.ID, destInfo.Addrs, peerstore.PermanentAddrTTL)
+
+// 	stream, err := t.p2pHost.NewStream(network.WithUseTransient(t.hostCtx, "relay"), nodeInfo.PeerID, defaults.DirectProtocol)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("new stream between %s: %s err: %w", destName, destInfo, err)
+// 	}
+// 	klog.Infof("New stream between peer %s: %s success", destName, destInfo)
+
+// 	streamWriter := bufio.NewWriter(stream)
+// 	streamReader := bufio.NewReader(stream)
+
+// 	// Handshake: Send a ready signal
+// 	_, err = streamWriter.Write([]byte("READY"))
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to send ready signal to %s: %w", destName, err)
+// 	}
+// 	err = streamWriter.Flush()
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to flush ready signal to %s: %w", destName, err)
+// 	}
+
+// 	// Wait for the receiver's ready signal
+// 	readySignal, err := streamReader.ReadString('\n')
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to read ready signal from %s: %w", destName, err)
+// 	}
+// 	if readySignal != "READY\n" {
+// 		return nil, fmt.Errorf("unexpected ready signal from %s: %s", destName, readySignal)
+// 	}
+
+// 	// Send message
+// 	_, err = streamWriter.Write(message)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("write message to %s err: %w", destName, err)
+// 	} else {
+// 		klog.Infof("[Direct] successfully send message to %s", destName)
+// 	}
+// 	err = streamWriter.Flush()
+// 	if err != nil {
+// 		return nil, fmt.Errorf("flush message to %s err: %w", destName, err)
+// 	}
+
+// 	// Read reply
+// 	readChan := make(chan []byte)
+// 	errorChan := make(chan error)
+// 	go func() {
+// 		data, err := io.ReadAll(streamReader)
+// 		if err != nil {
+// 			errorChan <- err
+// 			return
+// 		}
+// 		readChan <- data
+// 	}()
+
+// 	select {
+// 	case reply := <-readChan:
+// 		klog.Infof("[Direct] successfully received reply from %s", destName)
+// 		return reply, nil
+// 	case err := <-errorChan:
+// 		return nil, fmt.Errorf("read reply from %s err: %w", destName, err)
+// 	}
+// }
+
+// func (t *EdgeTunnel) directConnectionHandler(stream network.Stream) {
+// 	remotePeer := peer.AddrInfo{
+// 		ID:    stream.Conn().RemotePeer(),
+// 		Addrs: []ma.Multiaddr{stream.Conn().RemoteMultiaddr()},
+// 	}
+// 	klog.Infof("Direct connection service got a new stream from %s", remotePeer)
+// 	defer stream.Close()
+
+// 	streamWriter := bufio.NewWriter(stream)
+// 	streamReader := bufio.NewReader(stream)
+
+// 	// Handshake: Send a ready signal
+// 	_, err := streamWriter.Write([]byte("READY"))
+// 	if err != nil {
+// 		klog.Errorf("Failed to send ready signal to %s: %v", remotePeer, err)
+// 		return
+// 	}
+// 	err = streamWriter.Flush()
+// 	if err != nil {
+// 		klog.Errorf("Failed to flush ready signal to %s: %v", remotePeer, err)
+// 		return
+// 	}
+
+// 	// Read message with retries and timeout
+// 	retries := 3
+// 	retryInterval := 1 * time.Second
+// 	var data []byte
+// 	for i := 0; i < retries; i++ {
+// 		readChan := make(chan []byte)
+// 		errorChan := make(chan error)
+// 		go func() {
+// 			data, err := io.ReadAll(streamReader)
+// 			if err != nil {
+// 				errorChan <- err
+// 				return
+// 			}
+// 			readChan <- data
+// 		}()
+
+// 		select {
+// 		case data = <-readChan:
+// 			break
+// 		case err := <-errorChan:
+// 			klog.Errorf("Error reading message from %s: %v", remotePeer, err)
+// 			time.Sleep(retryInterval)
+// 			continue
+// 		case <-time.After(5 * time.Second): // Adjust the timeout as needed
+// 			klog.Errorf("Timeout reading message from %s", remotePeer)
+// 			time.Sleep(retryInterval)
+// 			continue
+// 		}
+// 	}
+
+// 	if data == nil {
+// 		klog.Errorf("Failed to read message from %s after retries", remotePeer)
+// 		return
+// 	}
+
+// 	var msg model.Message
+// 	err = json.Unmarshal(data, &msg)
+// 	if err != nil {
+// 		klog.Errorf("Failed to unmarshal message: %v", err)
+// 		return
+// 	}
+// 	klog.Infof("[Direct] successfully received message %s from %s", msg.String(), remotePeer.ID)
+// 	beehiveContext.Send(defaults.MeshServerName, msg)
+
+// 	// Send reply
+// 	reply := []byte("REPLY: ")
+// 	_, err = streamWriter.Write(reply)
+// 	if err != nil {
+// 		klog.Errorf("Write reply to %s err: %v", remotePeer, err)
+// 		return
+// 	}
+// 	err = streamWriter.Flush()
+// 	if err != nil {
+// 		klog.Errorf("Flush reply to %s err: %v", remotePeer, err)
+// 		return
+// 	}
+
+// 	klog.Infof("Sent reply to %s", remotePeer)
+// }
+
+func (t *EdgeTunnel) broadcastMessage() error {
+	klog.Infof("broadcastMessage started")
+	err := wait.PollUntil(time.Second, func() (bool, error) {
+		msg, err := beehiveContext.Receive(defaults.EdgeTunnelModuleName)
+		if err != nil {
+			klog.Errorf("Failed to receive message to %s: %v", defaults.EdgeTunnelModuleName, err)
+			return false, nil // continue polling
+		}
+
+		klog.Infof("Received message to %s: %+v", defaults.EdgeTunnelModuleName, msg)
+		data, err := json.Marshal(msg)
+		if err != nil {
+			klog.Errorf("Failed to marshal message: %v", err)
+			return false, nil // continue polling
+		}
+
+		err = t.Topic.Publish(t.hostCtx, data)
+		if err != nil {
+			klog.Errorf("Failed to publish message: %v", err)
+			return false, nil // continue polling
+		}
+
+		klog.Infof("Successfully broadcasted metadata for node %s", t.Config.NodeName)
+		return false, nil // continue polling
+	}, t.stopCh)
+	return err
+}
+
+func (t *EdgeTunnel) handleIncomingMessages() error {
+	klog.Infof("handleIncomingMessages started")
+	err := wait.PollUntil(time.Second, func() (bool, error) {
+		msg, err := t.Sub.Next(t.hostCtx)
+		if err != nil {
+			klog.Errorf("Error receiving message: %v", err)
+			return false, nil // continue polling
+		}
+		// Skip messages from self
+		if msg.ReceivedFrom == t.p2pHost.ID() {
+			klog.V(4).Infof("Skipping message from self")
+			return false, nil // continue polling
+		}
+
+		var receivedMsg model.Message
+		err = json.Unmarshal(msg.Data, &receivedMsg)
+		if err != nil {
+			klog.Errorf("Error unmarshalling message: %v", err)
+			return false, nil // continue polling
+		}
+
+		klog.Infof("Received message from %s: %+v", msg.ReceivedFrom, receivedMsg)
+		// Add your logic to handle the received message here
+		beehiveContext.Send(defaults.EdgeProxyModuleName, receivedMsg)
+
+		return false, nil // continue polling
+	}, t.stopCh)
+	return err
+}
+
+func (t *EdgeTunnel) handleNodeEvents() {
+	// <-t.disconnectChan
+	for e := range t.nodeEventChan {
+		go func(event NodeEvent) {
+			currentTime := time.Now().Format("2006-01-02 15:04:05.000")
+			switch event.EventName {
+			case EventNodeJoined:
+				klog.Infof("node event joined in %s", currentTime)
+				klog.Infof("Node joined: %s", event.NodeName)
+				// kubeclient := t.Clients.GetKubeClient()
+				// node, _ := kubeclient.CoreV1().Nodes().Get(context.Background(), t.Config.NodeName, metav1.GetOptions{})
+				// resource := fmt.Sprintf("%s/%s/%s", "default", model.ResourceTypeNode, t.Config.NodeName)
+				// msg := model.NewMessage("").BuildRouter(defaults.MeshServerName, "", resource, model.InsertOperation).FillBody(node)
+				// op, err := json.Marshal(msg)
+				// if err != nil {
+				// 	klog.Errorf("Failed to marshal message: %v", err)
+				// 	return
+				// }
+				// _, err = t.GetDirectStream(event.NodeName, op)
+				// if err != nil {
+				// 	klog.Errorf("Failed to get direct stream to node %s: %v", event.NodeName, err)
+				// 	return
+				// }
+				if v1alpha1.DetectRunningMode() != defaults.CloudMode {
+					msg, err := t.BuildselfEndpointsMsg()
+					if err != nil {
+						klog.Errorf("fail to build msg: %v", msg)
+					}
+					klog.Infof("[%s]: successfully build msg %s", defaults.EdgeTunnelModuleName, msg)
+					beehiveContext.Send(defaults.EdgeTunnelModuleName, *msg)
+				}
+
+			case EventNodeLeft:
+				klog.Infof("node event left in %s", currentTime)
+				klog.Infof("Node left: %s", event.NodeName)
+				if v1alpha1.DetectRunningMode() != defaults.CloudMode {
+					// kubeclient := t.Clients.GetKubeClient()
+					// err := kubeclient.CoreV1().Nodes().Delete(context.Background(), event.NodeName, metav1.DeleteOptions{})
+					// if err != nil {
+					// 	klog.Infof("no such Node: %v", err)
+					// }
+					// err = handleNodeNotReady(kubeclient, event.NodeName)
+					// if err != nil {
+					// 	klog.Errorf("Can not handle endpoints: %v", err)
+					// }
+					msg := model.NewMessage("").
+						BuildRouter(t.Config.NodeName, "edgemesh", "service", "internalLeft").
+						FillBody(event.NodeName)
+					beehiveContext.Send(defaults.EdgeProxyModuleName, *msg)
+				}
+			}
+		}(e)
+	}
+}
+
+// func handleNodeNotReady(clientset kubernetes.Interface, nodeName string) error {
+// 	// 获取所有的 Endpoints
+// 	endpointsList, err := clientset.CoreV1().Endpoints(metav1.NamespaceAll).List(context.TODO(), metav1.ListOptions{})
+// 	if err != nil {
+// 		return err
+// 	}
+
+// 	// 用于存储需要更新的 Endpoints
+// 	endpointsToUpdate := make(map[string]*v1.Endpoints)
+
+// 	// 遍历所有 Endpoints，检查并标记需要更新的 Endpoints
+// 	for i := range endpointsList.Items {
+// 		endpoints := &endpointsList.Items[i]
+// 		updated := false
+// 		for j := range endpoints.Subsets {
+// 			subset := &endpoints.Subsets[j]
+// 			newAddresses := make([]v1.EndpointAddress, 0, len(subset.Addresses))
+// 			for _, address := range subset.Addresses {
+// 				if address.NodeName == nil || *address.NodeName != nodeName {
+// 					newAddresses = append(newAddresses, address)
+// 				} else {
+// 					updated = true
+// 				}
+// 			}
+// 			if updated {
+// 				subset.Addresses = newAddresses
+// 			}
+// 		}
+// 		if updated {
+// 			endpointsToUpdate[fmt.Sprintf("%s/%s", endpoints.Namespace, endpoints.Name)] = endpoints
+// 		}
+// 	}
+
+// 	// 批量更新需要修改的 Endpoints
+// 	for _, endpoints := range endpointsToUpdate {
+// 		klog.Infof("Updating Endpoints for Service %s in Namespace %s", endpoints.Name, endpoints.Namespace)
+// 		err := updateEndpointWithRetry(clientset, endpoints)
+// 		if err != nil {
+// 			klog.Errorf("Error updating Endpoints %s/%s: %v", endpoints.Namespace, endpoints.Name, err)
+// 		}
+// 	}
+
+// 	return nil
+// }
+
+// func updateEndpointWithRetry(clientset kubernetes.Interface, endpoints *v1.Endpoints) error {
+// 	maxRetries := 3
+// 	retryInterval := time.Second * 2
+
+// 	var err error
+// 	for i := 0; i < maxRetries; i++ {
+// 		_, err = clientset.CoreV1().Endpoints(endpoints.Namespace).Update(context.TODO(), endpoints, metav1.UpdateOptions{})
+// 		if err == nil {
+// 			klog.Infof("Successfully updated Endpoints %s/%s", endpoints.Namespace, endpoints.Name)
+// 			return nil
+// 		}
+// 		klog.Warningf("Error updating Endpoints %s/%s: %v. Retrying...", endpoints.Namespace, endpoints.Name, err)
+// 		time.Sleep(retryInterval)
+// 	}
+// 	return err
+// }

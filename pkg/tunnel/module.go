@@ -3,6 +3,7 @@ package tunnel
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -24,19 +25,47 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/kubeedge/beehive/pkg/core"
+
 	"github.com/kubeedge/edgemesh/pkg/apis/config/defaults"
 	"github.com/kubeedge/edgemesh/pkg/apis/config/v1alpha1"
+	"github.com/kubeedge/edgemesh/pkg/clients"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 )
 
 // Agent expose the tunnel ability.  TODO convert var to func
 var Agent *EdgeTunnel
 
+type NodeStatus int
+
+const (
+	NodeStatusActive NodeStatus = iota
+	NodeStatusInactive
+)
+
+type NodeInfo struct {
+	PeerID   peer.ID
+	Status   NodeStatus
+	LastSeen time.Time
+}
+
+type NodeEvent struct {
+	EventName     string   `json:"eventName"`
+	NodeName      string   `json:"nodeName"`
+	NodeEventInfo NodeInfo `json:"nodeEventInfo,omitempty"`
+}
+
+const (
+	EventPing       = "Ping"
+	EventNodeJoined = "NodeJoined"
+	EventNodeLeft   = "NodeLeft"
+)
+
 // EdgeTunnel is used for solving cross subset communication
 type EdgeTunnel struct {
 	Config           *v1alpha1.EdgeTunnelConfig
-	p2pHost          p2phost.Host       // libp2p host
-	hostCtx          context.Context    // ctx governs the lifetime of the libp2p host
-	nodePeerMap      map[string]peer.ID // map of Kubernetes node name and peer.ID
+	p2pHost          p2phost.Host         // libp2p host
+	hostCtx          context.Context      // ctx governs the lifetime of the libp2p host
+	nodePeerMap      map[string]*NodeInfo // map of Kubernetes node name and peer.ID
 	mdnsPeerChan     chan peer.AddrInfo
 	dhtPeerChan      <-chan peer.AddrInfo
 	isRelay          bool
@@ -45,6 +74,13 @@ type EdgeTunnel struct {
 	holepunchService *holepunch.Service
 	stopCh           chan struct{}
 	cfgWatcher       *fsnotify.Watcher
+	pubSub           *pubsub.PubSub
+	Topic            *pubsub.Topic
+	Sub              *pubsub.Subscription
+	nodeEventChan    chan NodeEvent
+	disconnectChan   chan struct{}
+	mu               sync.Mutex
+	Clients          *clients.Clients
 }
 
 // Name of EdgeTunnel
@@ -72,8 +108,8 @@ func (t *EdgeTunnel) Shutdown() {
 }
 
 // Register edgetunnel to beehive modules
-func Register(c *v1alpha1.EdgeTunnelConfig) error {
-	agent, err := newEdgeTunnel(c)
+func Register(c *v1alpha1.EdgeTunnelConfig, cli *clients.Clients) error {
+	agent, err := newEdgeTunnel(c, cli)
 	if err != nil {
 		return fmt.Errorf("register module EdgeTunnel error: %v", err)
 	}
@@ -81,7 +117,7 @@ func Register(c *v1alpha1.EdgeTunnelConfig) error {
 	return nil
 }
 
-func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig) (*EdgeTunnel, error) {
+func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig, cli *clients.Clients) (*EdgeTunnel, error) {
 	if !c.Enable {
 		return &EdgeTunnel{Config: c}, nil
 	}
@@ -241,12 +277,20 @@ func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig) (*EdgeTunnel, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to add watch in %s, err: %w", c.ConfigPath, err)
 	}
+	ps, err := pubsub.NewGossipSub(ctx, h)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create pubsub: %w", err)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("dial error: %v", err)
+	}
 
 	edgeTunnel := &EdgeTunnel{
 		Config:           c,
 		p2pHost:          h,
 		hostCtx:          ctx,
-		nodePeerMap:      make(map[string]peer.ID),
+		nodePeerMap:      make(map[string]*NodeInfo),
 		mdnsPeerChan:     mdnsPeerChan,
 		dhtPeerChan:      dhtPeerChan,
 		isRelay:          isRelay,
@@ -255,6 +299,10 @@ func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig) (*EdgeTunnel, error) {
 		holepunchService: holepunchService,
 		stopCh:           make(chan struct{}),
 		cfgWatcher:       watcher,
+		pubSub:           ps,
+		nodeEventChan:    make(chan NodeEvent, 100),
+		disconnectChan:   make(chan struct{}, 1),
+		Clients:          cli,
 	}
 
 	// run relay finder
@@ -265,7 +313,12 @@ func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig) (*EdgeTunnel, error) {
 		h.SetStreamHandler(defaults.DiscoveryProtocol, edgeTunnel.discoveryStreamHandler)
 		h.SetStreamHandler(defaults.ProxyProtocol, edgeTunnel.proxyStreamHandler)
 		h.SetStreamHandler(defaults.CNIProtocol, edgeTunnel.CNIAdapterStreamHandler)
+		// h.SetStreamHandler(defaults.DirectProtocol, edgeTunnel.directConnectionHandler)
 	}
+	topic, sub := edgeTunnel.subscribeMetadataTopic()
+	edgeTunnel.Topic = topic
+	edgeTunnel.Sub = sub
+
 	Agent = edgeTunnel
 	return edgeTunnel, nil
 }
@@ -289,4 +342,20 @@ func generateListenAddr(c *v1alpha1.EdgeTunnelConfig) (libp2p.Option, error) {
 
 	listenAddr := libp2p.ListenAddrStrings(multiAddrStrings...)
 	return listenAddr, nil
+}
+
+func (t *EdgeTunnel) subscribeMetadataTopic() (*pubsub.Topic, *pubsub.Subscription) {
+	topicName := "edgemesh-metadata"
+	topic, err := t.pubSub.Join(topicName)
+	if err != nil {
+		klog.Errorf("订阅主题 %s 失败: %v", topic, err)
+		return nil, nil
+	}
+	klog.Infof("成功订阅主题: %s", topic)
+	sub, err := topic.Subscribe()
+	if err != nil {
+		klog.Errorf("订阅主题 %s 失败: %v", topic, err)
+		return nil, nil
+	}
+	return topic, sub
 }

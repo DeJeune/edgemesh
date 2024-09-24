@@ -13,7 +13,7 @@ import (
 	istioapi "istio.io/client-go/pkg/apis/networking/v1alpha3"
 	istio "istio.io/client-go/pkg/clientset/versioned"
 	istioinformers "istio.io/client-go/pkg/informers/externalversions"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -29,6 +29,7 @@ import (
 	netutils "k8s.io/utils/net"
 	stringslices "k8s.io/utils/strings/slices"
 
+	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
 	"github.com/kubeedge/edgemesh/pkg/apis/config/defaults"
 	"github.com/kubeedge/edgemesh/pkg/apis/config/v1alpha1"
 	"github.com/kubeedge/edgemesh/pkg/tunnel"
@@ -201,6 +202,7 @@ func (lb *LoadBalancer) syncServices() {
 		existingPorts := lb.mergeService(change.current)
 		lb.unmergeService(change.previous, existingPorts)
 	}
+	klog.Infof("services: %v at time %v", lb.services, time.Now())
 
 	lb.cleanupStaleStickySessions()
 }
@@ -244,6 +246,7 @@ func (lb *LoadBalancer) Run() error {
 	)
 	go lb.runDestinationRule(drInformer.Informer().HasSynced, lb.stopCh)
 	istioInformerFactory.Start(lb.stopCh)
+	go lb.handleMessage(lb.stopCh)
 
 	return nil
 }
@@ -316,6 +319,7 @@ func (lb *LoadBalancer) handleAddEndpoints(obj interface{}) {
 
 func (lb *LoadBalancer) handleUpdateEndpoints(oldObj, newObj interface{}) {
 	oldEndpoints, ok := oldObj.(*v1.Endpoints)
+
 	if !ok {
 		utilruntime.HandleError(fmt.Errorf("unexpected object type: %v", oldObj))
 		return
@@ -903,6 +907,7 @@ func (lb *LoadBalancer) nextEndpointWithConn(svcPort proxy.ServicePortName, srcA
 // through until it is able to successfully connect, or it has tried with all timeouts in EndpointDialTimeouts.
 func (lb *LoadBalancer) TryConnectEndpoints(service proxy.ServicePortName, srcAddr net.Addr, protocol string,
 	netConn net.Conn, cliReq *http.Request) (out net.Conn, err error) {
+	klog.Info("TryConnectEndpoints...")
 	sessionAffinityReset := false
 	for _, dialTimeout := range userspace.EndpointDialTimeouts {
 		endpoint, req, err := lb.nextEndpointWithConn(service, srcAddr, sessionAffinityReset, netConn, cliReq)
@@ -1037,4 +1042,53 @@ func (lb *LoadBalancer) GetServicePortName(namespacedName types.NamespacedName, 
 		}
 	}
 	return proxy.ServicePortName{}, false
+}
+
+func (lb *LoadBalancer) handleMessage(stopCh <-chan struct{}) {
+	klog.Infof("[LoadBalancer]handle Message: running...")
+	for {
+		select {
+		case <-stopCh:
+			return
+		default:
+		}
+		msg, err := beehiveContext.Receive(defaults.EdgeProxyModuleName)
+		if err != nil {
+			klog.Errorf("[%s] faild to message from EdgeTunnel", defaults.EdgeProxyModuleName)
+			return
+		}
+		switch msg.GetOperation() {
+		case "internalJoin":
+			endpoints, err := ParseJSONToEndpoints(msg.GetContent().(string))
+			if err != nil {
+				fmt.Println("Error:", err)
+				return
+			}
+			nodename := msg.GetSource()
+			for _, balancer := range lb.services {
+				lb.removeNodeByName(balancer, nodename)
+			}
+			for _, ep := range endpoints {
+				klog.Infof("添加Endpoints信息,Name=%s, Namespace=%s\n", ep.Name, ep.Namespace)
+				lb.mergeEndpoints(&ep)
+			}
+			klog.Infof("当前Endpoints信息：%v", lb.services)
+
+		case "internalLeft":
+			nodeName := msg.GetContent().(string)
+			for _, balancer := range lb.services {
+				lb.removeNodeByName(balancer, nodeName)
+			}
+			lb.RemoveEmptyEndpointsServices()
+			klog.Infof("离开%sEndpoints信息：%v", nodeName, lb.services)
+		case "patch":
+			podname := msg.GetContent().(string)
+			for _, balancer := range lb.services {
+				lb.removePodByName(balancer, podname)
+			}
+			lb.RemoveEmptyEndpointsServices()
+			klog.Infof("patch离开%sEndpoints信息：%v", podname, lb.services)
+		}
+	}
+
 }

@@ -14,6 +14,10 @@ data:
         enable: true
       edgeTunnel:
         enable: true
+        relayNodes:
+        - nodeName: edge2
+          advertiseAddress:
+          - 192.168.15.13
         #relayNodes:
         #- nodeName: <your relay node name1>
         #  advertiseAddress:

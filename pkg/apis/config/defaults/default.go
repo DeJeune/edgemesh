@@ -29,6 +29,8 @@ const (
 
 	TempKubeConfigPath = "kubeconfig"
 	TempCorefilePath   = "Corefile"
+	MeshServerAddress  = "unix:///var/lib/kubeedge/edgemesh.sock"
+	MeshServerName     = "MeshServer"
 	MetaServerAddress  = "http://127.0.0.1:10550"
 	MetaServerCertDir  = BaseDir + "metaserver/"
 	MetaServerCaFile   = MetaServerCertDir + "rootCA.crt"
