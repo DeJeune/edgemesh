@@ -77,6 +77,7 @@ func newProxyServer(
 
 	proxier, err := userspace.NewCustomProxier(
 		loadBalancer,
+		// 169.254.96.16
 		netutils.ParseIPSloppy(config.BindAddress),
 		iptInterface,
 		execer,
@@ -84,7 +85,7 @@ func newProxyServer(
 		config.IPTables.SyncPeriod.Duration,
 		config.IPTables.MinSyncPeriod.Duration,
 		config.UDPIdleTimeout.Duration,
-		config.NodePortAddresses,
+		config.NodePortAddresses, // nil
 		newProxySocket,
 	)
 	if err != nil {
@@ -134,6 +135,7 @@ func (s *Server) Run() error {
 	// are registered yet.
 	serviceConfig := config.NewServiceConfig(informerFactory.Core().V1().Services(), s.ConfigSyncPeriod)
 	serviceConfig.RegisterEventHandler(s.Proxier)
+	// 调用的是syncProxyRules
 	go serviceConfig.Run(wait.NeverStop)
 
 	if endpointsHandler, ok := s.Proxier.(config.EndpointsHandler); ok {

@@ -21,21 +21,17 @@ set -o nounset
 set -o pipefail
 
 edgemesh::buildx::prepare_env() {
-  # Check whether buildx exists.
-  if ! docker buildx >/dev/null 2>&1; then
-    echo "ERROR: docker buildx not available. Docker 19.03 or higher is required with experimental features enabled" >&2
+  # Check whether nerdctl exists.
+  if ! command -v nerdctl >/dev/null 2>&1; then
+    echo "ERROR: nerdctl not available. Please install nerdctl" >&2
     exit 1
   fi
 
   # Use tonistiigi/binfmt that is to enable an execution of different multi-architecture containers
-  docker run --privileged --rm tonistiigi/binfmt --install all
+  echo "Downloading binfmt image..."
+  nerdctl run --privileged --rm swr.cn-north-4.myhuaweicloud.com/cloud-native-riscv64/binfmt:master --install all
 
-  # Create a new builder which gives access to the new multi-architecture features.
-  builder_instance="edgemesh-buildx"
-  if ! docker buildx inspect $builder_instance >/dev/null 2>&1; then
-    docker buildx create --use --name $builder_instance --driver docker-container
-  fi
-  docker buildx use $builder_instance
+
 }
 
 edgemesh::buildx:generate-dockerfile() {
@@ -52,13 +48,14 @@ edgemesh::buildx::push-multi-platform-images() {
     temp_dockerfile=build/${component}/buildx_dockerfile
     edgemesh::buildx:generate-dockerfile build/${component}/Dockerfile > ${temp_dockerfile}
 
-    docker buildx build --push \
+    nerdctl builder build \
       --build-arg GO_LDFLAGS="${GO_LDFLAGS}" \
       --platform ${PLATFORMS} \
       -t ${IMAGE_REPO}/edgemesh-${component}:${IMAGE_TAG} \
       -f ${temp_dockerfile} .
 
     rm ${temp_dockerfile}
+    nerdctl push --all-platforms ${IMAGE_REPO}/edgemesh-${component}:${IMAGE_TAG}
   done
 }
 
@@ -79,7 +76,7 @@ edgemesh::buildx::build-multi-platform-images() {
       tag_name=${IMAGE_REPO}/edgemesh-${component}:${IMAGE_TAG}-${arch////-}
       echo "building ${arch} image for ${component} and the image tag name is ${tag_name}"
 
-      docker buildx build -o type=docker \
+      nerdctl build --output type=docker \
         --build-arg GO_LDFLAGS="${GO_LDFLAGS}" \
         --platform ${arch} \
         -t ${tag_name} \

@@ -1,6 +1,8 @@
 package v1alpha1
 
 import (
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/kubeedge/edgemesh/pkg/apis/config/defaults"
@@ -29,7 +31,8 @@ type AgentModules struct {
 	// EdgeTunnelConfig indicates EdgeTunnel module config
 	EdgeTunnelConfig *EdgeTunnelConfig `json:"edgeTunnel,omitempty"`
 	//EdgeCniConfig indicates EdgeCNI module config
-	EdgeCNIConfig *EdgeCNIConfig `json:"edgeCNI,omitempty"`
+	EdgeCNIConfig        *EdgeCNIConfig `json:"edgeCNI,omitempty"`
+	EdgeMeshServerConfig *MeshServer    `json:"meshServer,omitempty"`
 }
 
 // EdgeMeshGatewayConfig indicates the config of EdgeMeshGateway which get from EdgeMeshGateway config file
@@ -321,6 +324,13 @@ type EdgeTunnelConfig struct {
 	ExtraFilteredInterfaces string `json:"extraFilteredInterfaces,omitempty"`
 	// MetricConfig provides metrics for prometheus
 	MetricConfig *MetricConfig `json:"metricConfig,omitempty"`
+	// by default 60
+	NodeInactiveThreshold time.Duration `json:"nodeInactiveThreshold,omitempty"`
+}
+
+type MeshServer struct {
+	Enable bool   `json:"enable"`
+	Server string `json:"server"`
 }
 
 type RelayNode struct {

@@ -127,7 +127,7 @@ func registerModules(c *v1alpha1.EdgeMeshGatewayConfig, cli *clients.Clients) []
 	if err := gateway.Register(c.Modules.EdgeGatewayConfig, cli); err != nil {
 		errs = append(errs, err)
 	}
-	if err := tunnel.Register(c.Modules.EdgeTunnelConfig); err != nil {
+	if err := tunnel.Register(c.Modules.EdgeTunnelConfig, cli); err != nil {
 		errs = append(errs, err)
 	}
 	return errs

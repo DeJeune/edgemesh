@@ -34,7 +34,7 @@ func newProxySocket(protocol v1.Protocol, ip net.IP, port int) (userspace.ProxyS
 	if ip != nil {
 		host = ip.String()
 	}
-
+	klog.Infof("newProxySocket: protocol:%s,ip:%s,port:%s", protocol, ip.String(), port)
 	switch strings.ToUpper(string(protocol)) {
 	case "TCP":
 		listener, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
@@ -71,6 +71,7 @@ func (tcp *tcpProxySocket) ListenPort() int {
 
 func (tcp *tcpProxySocket) ProxyLoop(service proxy.ServicePortName, myInfo *userspace.ServiceInfo, _ userspace.LoadBalancer) {
 	for {
+		klog.Infof("tcpProxyLoop...")
 		if !myInfo.IsAlive() {
 			// The service port was closed or replaced.
 			return
@@ -125,6 +126,7 @@ func (udp *udpProxySocket) Addr() net.Addr {
 
 func (udp *udpProxySocket) ProxyLoop(service proxy.ServicePortName, myInfo *userspace.ServiceInfo, _ userspace.LoadBalancer) {
 	var buffer [4096]byte // 4KiB should be enough for most whole-packets
+	klog.Info("ProxyLoop...")
 	for {
 		if !myInfo.IsAlive() {
 			// The service port was closed or replaced.
