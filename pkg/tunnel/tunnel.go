@@ -16,6 +16,15 @@ import (
 	"github.com/fsnotify/fsnotify"
 	ds "github.com/ipfs/go-datastore"
 	dsync "github.com/ipfs/go-datastore/sync"
+	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
+	"github.com/kubeedge/beehive/pkg/core/model"
+	"github.com/kubeedge/edgemesh/pkg/apis/config/defaults"
+	"github.com/kubeedge/edgemesh/pkg/apis/config/v1alpha1"
+	"github.com/kubeedge/edgemesh/pkg/messagepkg"
+	discoverypb "github.com/kubeedge/edgemesh/pkg/tunnel/pb/discovery"
+	proxypb "github.com/kubeedge/edgemesh/pkg/tunnel/pb/proxy"
+	netutil "github.com/kubeedge/edgemesh/pkg/util/net"
+	cni "github.com/kubeedge/edgemesh/pkg/util/tunutils"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p-kad-dht/dual"
 	p2phost "github.com/libp2p/go-libp2p/core/host"
@@ -35,15 +44,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/yaml"
-
-	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
-	"github.com/kubeedge/beehive/pkg/core/model"
-	"github.com/kubeedge/edgemesh/pkg/apis/config/defaults"
-	"github.com/kubeedge/edgemesh/pkg/apis/config/v1alpha1"
-	discoverypb "github.com/kubeedge/edgemesh/pkg/tunnel/pb/discovery"
-	proxypb "github.com/kubeedge/edgemesh/pkg/tunnel/pb/proxy"
-	netutil "github.com/kubeedge/edgemesh/pkg/util/net"
-	cni "github.com/kubeedge/edgemesh/pkg/util/tunutils"
 )
 
 const (
@@ -214,6 +214,7 @@ func (t *EdgeTunnel) discovery(discoverType defaults.DiscoveryType, pi peer.Addr
 			LastSeen: time.Now(),
 		}
 		t.nodePeerMap[nodeName] = nodeInfo
+		klog.Infof("通过discovery:%s方法检测到节点%s已加入", protocol, nodeName)
 		t.nodeEventChan <- NodeEvent{EventName: EventNodeJoined, NodeName: nodeName, NodeEventInfo: *nodeInfo}
 	} else {
 		// Existing node
@@ -222,6 +223,7 @@ func (t *EdgeTunnel) discovery(discoverType defaults.DiscoveryType, pi peer.Addr
 			// Node rejoining
 			nodeInfo.Status = NodeStatusActive
 			nodeInfo.LastSeen = time.Now()
+			klog.Infof("通过discovery:%s方法检测到节点%s已重新连接", protocol, nodeName)
 			t.nodeEventChan <- NodeEvent{EventName: EventNodeJoined, NodeName: nodeName, NodeEventInfo: *nodeInfo}
 		} else {
 			// Node already active, just update LastSeen
@@ -251,6 +253,7 @@ func (t *EdgeTunnel) checkNodeStatus() {
 				nodeInfo.Status = NodeStatusActive
 				nodeInfo.LastSeen = now
 				t.nodePeerMap[nodeName] = nodeInfo
+				klog.Infof("通过checkNodeStatus检测到节点%s已重新连接", nodeName)
 				events = append(events, NodeEvent{EventName: EventNodeJoined, NodeName: nodeName, NodeEventInfo: *nodeInfo})
 			}
 		}
@@ -350,11 +353,13 @@ func (t *EdgeTunnel) discoveryStreamHandler(stream network.Stream) {
 			LastSeen: time.Now(),
 		}
 		t.nodePeerMap[nodeName] = nodeInfo
+		klog.Infof("通过discoveryStreamHandler检测到节点%s已加入", nodeName)
 		t.nodeEventChan <- NodeEvent{EventName: EventNodeJoined, NodeName: nodeName, NodeEventInfo: *nodeInfo}
 	} else if nodeInfo.Status == NodeStatusInactive {
 		nodeInfo.Status = NodeStatusActive
 		nodeInfo.LastSeen = time.Now()
 		t.nodePeerMap[nodeName] = nodeInfo
+		klog.Infof("通过discoveryStreamHandler检测到节点%s已重新连接", nodeName)
 		t.nodeEventChan <- NodeEvent{EventName: EventNodeJoined, NodeName: nodeName, NodeEventInfo: *nodeInfo}
 	} else {
 		nodeInfo.LastSeen = time.Now()
@@ -839,6 +844,7 @@ func (t *EdgeTunnel) Run() {
 	go t.handleNodeEvents()
 	t.setupConnectionManager()
 	t.runHeartbeat()
+	t.detectCloudNode()
 }
 
 func (t *EdgeTunnel) runMetricsServer() {
@@ -1243,11 +1249,6 @@ func (t *EdgeTunnel) handleIncomingMessages() error {
 			klog.Errorf("Error receiving message: %v", err)
 			return false, nil // continue polling
 		}
-		// Skip messages from self
-		if msg.ReceivedFrom == t.p2pHost.ID() {
-			klog.V(4).Infof("Skipping message from self")
-			return false, nil // continue polling
-		}
 
 		var receivedMsg model.Message
 		err = json.Unmarshal(msg.Data, &receivedMsg)
@@ -1256,9 +1257,21 @@ func (t *EdgeTunnel) handleIncomingMessages() error {
 			return false, nil // continue polling
 		}
 
+		// Skip messages from self
+		if receivedMsg.GetOperation() == messagepkg.NodeJoined {
+			if msg.ReceivedFrom == t.p2pHost.ID() {
+				klog.V(4).Infof("Skipping message from self")
+				return false, nil // continue polling
+			}
+		}
+
 		klog.Infof("Received message from %s: %+v", msg.ReceivedFrom, receivedMsg)
 		// Add your logic to handle the received message here
-		beehiveContext.Send(defaults.EdgeProxyModuleName, receivedMsg)
+		if receivedMsg.GetOperation() == messagepkg.DetectCloudNode {
+			t.CloudNode = receivedMsg.GetContent().(string)
+		} else {
+			beehiveContext.Send(defaults.EdgeProxyModuleName, receivedMsg)
+		}
 
 		return false, nil // continue polling
 	}, t.stopCh)
@@ -1266,118 +1279,79 @@ func (t *EdgeTunnel) handleIncomingMessages() error {
 }
 
 func (t *EdgeTunnel) handleNodeEvents() {
-	// <-t.disconnectChan
+	processedEvents := make(map[string]time.Time)
+	deduplicationWindow := 5 * time.Second
+
 	for e := range t.nodeEventChan {
 		go func(event NodeEvent) {
-			currentTime := time.Now().Format("2006-01-02 15:04:05.000")
-			switch event.EventName {
-			case EventNodeJoined:
-				klog.Infof("node event joined in %s", currentTime)
-				klog.Infof("Node joined: %s", event.NodeName)
-				// kubeclient := t.Clients.GetKubeClient()
-				// node, _ := kubeclient.CoreV1().Nodes().Get(context.Background(), t.Config.NodeName, metav1.GetOptions{})
-				// resource := fmt.Sprintf("%s/%s/%s", "default", model.ResourceTypeNode, t.Config.NodeName)
-				// msg := model.NewMessage("").BuildRouter(defaults.MeshServerName, "", resource, model.InsertOperation).FillBody(node)
-				// op, err := json.Marshal(msg)
-				// if err != nil {
-				// 	klog.Errorf("Failed to marshal message: %v", err)
-				// 	return
-				// }
-				// _, err = t.GetDirectStream(event.NodeName, op)
-				// if err != nil {
-				// 	klog.Errorf("Failed to get direct stream to node %s: %v", event.NodeName, err)
-				// 	return
-				// }
-				if v1alpha1.DetectRunningMode() != defaults.CloudMode {
-					msg, err := t.BuildselfEndpointsMsg()
-					if err != nil {
-						klog.Errorf("fail to build msg: %v", msg)
-					}
-					klog.Infof("[%s]: successfully build msg %s", defaults.EdgeTunnelModuleName, msg)
-					beehiveContext.Send(defaults.EdgeTunnelModuleName, *msg)
-				}
+			eventKey := fmt.Sprintf("%s-%s", event.EventName, event.NodeName)
+			t.mu.Lock()
+			lastProcessed, exists := processedEvents[eventKey]
+			currentTime := time.Now()
+			if !exists || currentTime.Sub(lastProcessed) > deduplicationWindow {
+				processedEvents[eventKey] = currentTime
+				t.mu.Unlock()
 
-			case EventNodeLeft:
-				klog.Infof("node event left in %s", currentTime)
-				klog.Infof("Node left: %s", event.NodeName)
-				if v1alpha1.DetectRunningMode() != defaults.CloudMode {
-					// kubeclient := t.Clients.GetKubeClient()
-					// err := kubeclient.CoreV1().Nodes().Delete(context.Background(), event.NodeName, metav1.DeleteOptions{})
-					// if err != nil {
-					// 	klog.Infof("no such Node: %v", err)
-					// }
-					// err = handleNodeNotReady(kubeclient, event.NodeName)
-					// if err != nil {
-					// 	klog.Errorf("Can not handle endpoints: %v", err)
-					// }
-					msg := model.NewMessage("").
-						BuildRouter(t.Config.NodeName, "edgemesh", "service", "internalLeft").
-						FillBody(event.NodeName)
-					beehiveContext.Send(defaults.EdgeProxyModuleName, *msg)
+				// Process the event
+				currentTimeStr := currentTime.Format("2006-01-02 15:04:05.000")
+				switch event.EventName {
+				case EventNodeJoined:
+					klog.Infof("Node joined event received at %s", currentTimeStr)
+					klog.Infof("Node joined: %s", event.NodeName)
+
+					if event.NodeName == t.CloudNode {
+						msg := model.NewMessage("").
+							BuildRouter(t.Config.NodeName, "edgemesh", "config", messagepkg.IsSync).
+							FillBody(map[string]interface{}{
+								"isSync": true,
+							})
+						beehiveContext.Send(defaults.EdgeProxyModuleName, *msg)
+					}
+
+					if v1alpha1.DetectRunningMode() != defaults.CloudMode {
+						msg, err := t.BuildselfEndpointsMsg()
+						if err != nil {
+							klog.Errorf("Failed to build msg: %v", err)
+						} else {
+							klog.Infof("[%s]: Successfully built msg %s", defaults.EdgeTunnelModuleName, msg)
+							beehiveContext.Send(defaults.EdgeTunnelModuleName, *msg)
+						}
+					}
+
+				case EventNodeLeft:
+					klog.Infof("Node left event received at %s", currentTimeStr)
+					klog.Infof("Node left: %s", event.NodeName)
+
+					if event.NodeName == t.CloudNode {
+						msg := model.NewMessage("").
+							BuildRouter(t.Config.NodeName, "edgemesh", "config", messagepkg.IsSync).
+							FillBody(map[string]interface{}{
+								"isSync": false,
+							})
+						beehiveContext.Send(defaults.EdgeProxyModuleName, *msg)
+					}
+
+					if v1alpha1.DetectRunningMode() != defaults.CloudMode {
+						msg := model.NewMessage("").
+							BuildRouter(t.Config.NodeName, "edgemesh", "service", messagepkg.NodeLeft).
+							FillBody(event.NodeName)
+						beehiveContext.Send(defaults.EdgeProxyModuleName, *msg)
+					}
 				}
+			} else {
+				t.mu.Unlock()
+				klog.V(4).Infof("Skipping duplicate event: %s for node %s", event.EventName, event.NodeName)
 			}
 		}(e)
 	}
 }
 
-// func handleNodeNotReady(clientset kubernetes.Interface, nodeName string) error {
-// 	// 获取所有的 Endpoints
-// 	endpointsList, err := clientset.CoreV1().Endpoints(metav1.NamespaceAll).List(context.TODO(), metav1.ListOptions{})
-// 	if err != nil {
-// 		return err
-// 	}
-
-// 	// 用于存储需要更新的 Endpoints
-// 	endpointsToUpdate := make(map[string]*v1.Endpoints)
-
-// 	// 遍历所有 Endpoints，检查并标记需要更新的 Endpoints
-// 	for i := range endpointsList.Items {
-// 		endpoints := &endpointsList.Items[i]
-// 		updated := false
-// 		for j := range endpoints.Subsets {
-// 			subset := &endpoints.Subsets[j]
-// 			newAddresses := make([]v1.EndpointAddress, 0, len(subset.Addresses))
-// 			for _, address := range subset.Addresses {
-// 				if address.NodeName == nil || *address.NodeName != nodeName {
-// 					newAddresses = append(newAddresses, address)
-// 				} else {
-// 					updated = true
-// 				}
-// 			}
-// 			if updated {
-// 				subset.Addresses = newAddresses
-// 			}
-// 		}
-// 		if updated {
-// 			endpointsToUpdate[fmt.Sprintf("%s/%s", endpoints.Namespace, endpoints.Name)] = endpoints
-// 		}
-// 	}
-
-// 	// 批量更新需要修改的 Endpoints
-// 	for _, endpoints := range endpointsToUpdate {
-// 		klog.Infof("Updating Endpoints for Service %s in Namespace %s", endpoints.Name, endpoints.Namespace)
-// 		err := updateEndpointWithRetry(clientset, endpoints)
-// 		if err != nil {
-// 			klog.Errorf("Error updating Endpoints %s/%s: %v", endpoints.Namespace, endpoints.Name, err)
-// 		}
-// 	}
-
-// 	return nil
-// }
-
-// func updateEndpointWithRetry(clientset kubernetes.Interface, endpoints *v1.Endpoints) error {
-// 	maxRetries := 3
-// 	retryInterval := time.Second * 2
-
-// 	var err error
-// 	for i := 0; i < maxRetries; i++ {
-// 		_, err = clientset.CoreV1().Endpoints(endpoints.Namespace).Update(context.TODO(), endpoints, metav1.UpdateOptions{})
-// 		if err == nil {
-// 			klog.Infof("Successfully updated Endpoints %s/%s", endpoints.Namespace, endpoints.Name)
-// 			return nil
-// 		}
-// 		klog.Warningf("Error updating Endpoints %s/%s: %v. Retrying...", endpoints.Namespace, endpoints.Name, err)
-// 		time.Sleep(retryInterval)
-// 	}
-// 	return err
-// }
+func (t *EdgeTunnel) detectCloudNode() {
+	if v1alpha1.DetectRunningMode() == defaults.CloudMode {
+		t.CloudNode = t.Config.NodeName
+		msg := model.NewMessage("").
+			BuildRouter(t.Config.NodeName, "edgemesh", "service", messagepkg.DetectCloudNode).
+			FillBody(t.Config.NodeName)
+		beehiveContext.Send(defaults.EdgeTunnelModuleName, *msg)
+	}
+}

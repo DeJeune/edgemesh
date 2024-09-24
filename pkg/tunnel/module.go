@@ -63,6 +63,7 @@ const (
 // EdgeTunnel is used for solving cross subset communication
 type EdgeTunnel struct {
 	Config           *v1alpha1.EdgeTunnelConfig
+	CloudNode        string
 	p2pHost          p2phost.Host         // libp2p host
 	hostCtx          context.Context      // ctx governs the lifetime of the libp2p host
 	nodePeerMap      map[string]*NodeInfo // map of Kubernetes node name and peer.ID

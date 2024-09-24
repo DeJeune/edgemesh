@@ -23,9 +23,11 @@ import (
 	"k8s.io/utils/exec"
 	netutils "k8s.io/utils/net"
 
+	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
 	"github.com/kubeedge/edgemesh/pkg/apis/config/defaults"
 	"github.com/kubeedge/edgemesh/pkg/apis/config/v1alpha1"
 	"github.com/kubeedge/edgemesh/pkg/loadbalancer"
+	"github.com/kubeedge/edgemesh/pkg/messagepkg"
 )
 
 // Copy and update from https://github.com/kubernetes/kubernetes/blob/v1.23.0/cmd/kube-proxy/app/server.go and
@@ -41,6 +43,7 @@ type Server struct {
 	ConfigSyncPeriod  time.Duration
 	loadBalancer      *loadbalancer.LoadBalancer
 	serviceFilterMode defaults.ServiceFilterMode
+	isDisconnected    bool
 }
 
 // NewDefaultKubeProxyConfiguration new default kube-proxy config for edgemesh-agent runtime.
@@ -107,6 +110,8 @@ func newProxyServer(
 func (s *Server) Run() error {
 	// Determine the service filter mode.
 	// By default, we will proxy all services that are not labeled with the LabelEdgeMeshServiceProxyName label.
+	s.isDisconnected = false
+	go s.DetectDisconnected()
 	operation := selection.DoesNotExist
 	if s.serviceFilterMode != defaults.FilterIfLabelExistsMode {
 		operation = selection.Exists
@@ -136,12 +141,16 @@ func (s *Server) Run() error {
 	serviceConfig := config.NewServiceConfig(informerFactory.Core().V1().Services(), s.ConfigSyncPeriod)
 	serviceConfig.RegisterEventHandler(s.Proxier)
 	// 调用的是syncProxyRules
-	go serviceConfig.Run(wait.NeverStop)
+	if !s.isDisconnected {
+		go serviceConfig.Run(wait.NeverStop)
+	}
 
 	if endpointsHandler, ok := s.Proxier.(config.EndpointsHandler); ok {
 		endpointsConfig := config.NewEndpointsConfig(informerFactory.Core().V1().Endpoints(), s.ConfigSyncPeriod)
 		endpointsConfig.RegisterEventHandler(endpointsHandler)
-		go endpointsConfig.Run(wait.NeverStop)
+		if !s.isDisconnected {
+			go endpointsConfig.Run(wait.NeverStop)
+		}
 	}
 
 	// This has to start after the calls to NewServiceConfig and NewEndpointsConfig because those
@@ -173,4 +182,13 @@ func (s *Server) CleanupAndExit() error {
 		return errors.New("encountered an error while tearing down rules")
 	}
 	return nil
+}
+
+func (s *Server) DetectDisconnected() {
+	msg, _ := beehiveContext.Receive(defaults.EdgeProxyModuleName)
+	if msg.GetOperation() == messagepkg.IsSync {
+		data := msg.GetContent().(map[string]interface{})
+		isSync := data["isSync"].(bool)
+		s.isDisconnected = !isSync
+	}
 }

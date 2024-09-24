@@ -32,6 +32,7 @@ import (
 	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
 	"github.com/kubeedge/edgemesh/pkg/apis/config/defaults"
 	"github.com/kubeedge/edgemesh/pkg/apis/config/v1alpha1"
+	"github.com/kubeedge/edgemesh/pkg/messagepkg"
 	"github.com/kubeedge/edgemesh/pkg/tunnel"
 	netutil "github.com/kubeedge/edgemesh/pkg/util/net"
 )
@@ -1058,7 +1059,7 @@ func (lb *LoadBalancer) handleMessage(stopCh <-chan struct{}) {
 			return
 		}
 		switch msg.GetOperation() {
-		case "internalJoin":
+		case messagepkg.NodeJoined:
 			endpoints, err := ParseJSONToEndpoints(msg.GetContent().(string))
 			if err != nil {
 				fmt.Println("Error:", err)
@@ -1074,14 +1075,14 @@ func (lb *LoadBalancer) handleMessage(stopCh <-chan struct{}) {
 			}
 			klog.Infof("当前Endpoints信息：%v", lb.services)
 
-		case "internalLeft":
+		case messagepkg.NodeLeft:
 			nodeName := msg.GetContent().(string)
 			for _, balancer := range lb.services {
 				lb.removeNodeByName(balancer, nodeName)
 			}
 			lb.RemoveEmptyEndpointsServices()
 			klog.Infof("离开%sEndpoints信息：%v", nodeName, lb.services)
-		case "patch":
+		case messagepkg.PodPatch:
 			podname := msg.GetContent().(string)
 			for _, balancer := range lb.services {
 				lb.removePodByName(balancer, podname)
