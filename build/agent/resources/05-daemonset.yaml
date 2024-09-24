@@ -21,7 +21,7 @@ spec:
       containers:
       - name: edgemesh-agent
         securityContext:
-                privileged: true
+          privileged: true
         image: swr.cn-north-4.myhuaweicloud.com/cloud-native-riscv64/edgemesh-agent:latest
         imagePullPolicy: Always
         env:

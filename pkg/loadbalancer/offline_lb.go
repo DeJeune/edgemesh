@@ -40,7 +40,7 @@ func (lb *LoadBalancer) removeNodeByName(state *balancerState, nodeNameToRemove 
 			updatedEndpoints = append(updatedEndpoints, endpoint)
 		}
 	}
-	klog.Infof("After Remove Endpoints:%v", updatedEndpoints)
+	klog.Infof("保留的下的Endpoints:%v", updatedEndpoints)
 
 	state.endpoints = updatedEndpoints
 }
