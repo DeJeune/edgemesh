@@ -1045,7 +1045,7 @@ func (lb *LoadBalancer) GetServicePortName(namespacedName types.NamespacedName, 
 }
 
 func (lb *LoadBalancer) handleMessage(stopCh <-chan struct{}) {
-	klog.Infof("[LoadBalancer]handle Message: running...")
+	klog.Infof("[LoadBalancer]正在处理信息...")
 	for {
 		select {
 		case <-stopCh:
@@ -1080,14 +1080,27 @@ func (lb *LoadBalancer) handleMessage(stopCh <-chan struct{}) {
 				lb.removeNodeByName(balancer, nodeName)
 			}
 			lb.RemoveEmptyEndpointsServices()
-			klog.Infof("离开%sEndpoints信息：%v", nodeName, lb.services)
-		case "patch":
+			klog.Infof("离开%s节点后的Services信息：%v", nodeName, lb.services)
+
+		case "patchNotReady":
 			podname := msg.GetContent().(string)
 			for _, balancer := range lb.services {
 				lb.removePodByName(balancer, podname)
 			}
 			lb.RemoveEmptyEndpointsServices()
-			klog.Infof("patch离开%sEndpoints信息：%v", podname, lb.services)
+			klog.Infof("Pod%s发生故障", podname)
+
+		case "patchReady":
+			endpoints, err := ParseJSONToEndpoints(msg.GetContent().(string))
+			if err != nil {
+				fmt.Println("Error:", err)
+				return
+			}
+			for _, ep := range endpoints {
+				klog.Infof("添加Endpoints信息,Name=%s, Namespace=%s\n", ep.Name, ep.Namespace)
+				lb.mergeEndpoints(&ep)
+			}
+			klog.Infof("Pod已经恢复")
 		}
 	}
 

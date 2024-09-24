@@ -1293,7 +1293,7 @@ func (t *EdgeTunnel) handleNodeEvents() {
 					if err != nil {
 						klog.Errorf("fail to build msg: %v", msg)
 					}
-					klog.Infof("[%s]: successfully build msg %s", defaults.EdgeTunnelModuleName, msg)
+					klog.Infof("[%s]: 成功创建本机的Endpoints信息%s", defaults.EdgeTunnelModuleName, msg.Header)
 					beehiveContext.Send(defaults.EdgeTunnelModuleName, *msg)
 				}
 

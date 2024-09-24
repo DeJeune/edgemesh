@@ -49,19 +49,10 @@ func (lb *LoadBalancer) removeNodeByName(state *balancerState, nodeNameToRemove 
 func (lb *LoadBalancer) RemoveEmptyEndpointsServices() {
 	for servicePort, balancer := range lb.services {
 		if len(balancer.endpoints) == 0 {
-			klog.Infof("Removing service: Namespace=%s, Name=%s, Port=%s", servicePort.Namespace, servicePort.Name, servicePort.Port)
+			klog.Infof("删除Services: Namespace=%s, Name=%s, Port=%s", servicePort.Namespace, servicePort.Name, servicePort.Port)
 			delete(lb.services, servicePort)
 		}
 	}
-
-	svcPort := proxy.ServicePortName{
-		NamespacedName: types.NamespacedName{
-			Namespace: "default",
-			Name:      "hostname-lb-svc",
-		},
-		Port: "http-0",
-	}
-	klog.Infof("lb-svc:%v", lb.services[svcPort])
 }
 
 // mergeEndpoints 用于合并新旧 endpoints
@@ -87,12 +78,12 @@ func (lb *LoadBalancer) mergeEndpoints(endpoints *v1.Endpoints) {
 
 		if !exists || state == nil {
 			// 如果服务不存在，则创建一个新的服务并设置 endpoints
-			klog.V(1).InfoS("Setting new service and endpoints", "servicePortName", svcPort, "endpoints", newEndpoints)
+			klog.V(1).InfoS("创建新的Services和Endpoints", "servicePortName", svcPort, "endpoints", newEndpoints)
 			state = lb.newServiceInternal(svcPort, v1.ServiceAffinity(""), 0)
 			state.endpoints = utilproxy.ShuffleStrings(newEndpoints)
 		} else {
 			// 如果服务存在，则合并新的和旧的 endpoints
-			klog.V(1).InfoS("Merging new endpoints with existing service", "servicePortName", svcPort, "newEndpoints", newEndpoints)
+			klog.V(1).InfoS("合并新的Endpoints到Services", "servicePortName", svcPort, "newEndpoints", newEndpoints)
 			// 将旧的和新的 endpoints 合并并去重
 			endpointSet := make(map[string]struct{})
 			for _, ep := range state.endpoints {
@@ -131,8 +122,10 @@ func (lb *LoadBalancer) removePodByName(state *balancerState, podNameToRemove st
 		}
 
 		podName := parts[1]
-		if podName != podNameToRemove {
-			// 保留不是要删除的 pod
+		if podName == podNameToRemove {
+			klog.Infof("Removing pod: %s", endpoint) // 打印被删除的Pod
+		} else {
+			// 保留不是要删除的Pod
 			updatedEndpoints = append(updatedEndpoints, endpoint)
 		}
 	}
