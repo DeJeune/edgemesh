@@ -22,8 +22,8 @@ spec:
       - name: edgemesh-agent
         securityContext:
           privileged: true
-        image: kubeedge/edgemesh-agent:v1.17.0
-        imagePullPolicy: IfNotPresent
+        image: swr.cn-north-4.myhuaweicloud.com/cloud-native-riscv64/edgemesh-agent:latest
+        imagePullPolicy: Always
         env:
         - name: NODE_NAME
           valueFrom:
@@ -50,6 +50,8 @@ spec:
           readOnly: true
         - name: psk
           mountPath: /etc/edgemesh
+        - name: edgemesh-sock
+          mountPath: /var/lib/kubeedge
       restartPolicy: Always
       serviceAccountName: edgemesh-agent
       volumes:
@@ -65,3 +67,7 @@ spec:
       - name: psk
         configMap:
           name: edgemesh-agent-psk
+      - name: edgemesh-sock
+        hostPath:
+          path: /var/lib/kubeedge
+          type: DirectoryOrCreate
