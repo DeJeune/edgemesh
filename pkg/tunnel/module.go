@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sync"
@@ -30,6 +31,7 @@ import (
 	"github.com/kubeedge/edgemesh/pkg/apis/config/v1alpha1"
 	"github.com/kubeedge/edgemesh/pkg/clients"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/xtaci/kcp-go"
 )
 
 // Agent expose the tunnel ability.  TODO convert var to func
@@ -67,6 +69,7 @@ type EdgeTunnel struct {
 	p2pHost          p2phost.Host         // libp2p host
 	hostCtx          context.Context      // ctx governs the lifetime of the libp2p host
 	nodePeerMap      map[string]*NodeInfo // map of Kubernetes node name and peer.ID
+	peerIDtoNodeName map[peer.ID]string
 	mdnsPeerChan     chan peer.AddrInfo
 	dhtPeerChan      <-chan peer.AddrInfo
 	isRelay          bool
@@ -80,8 +83,11 @@ type EdgeTunnel struct {
 	Sub              *pubsub.Subscription
 	nodeEventChan    chan NodeEvent
 	disconnectChan   chan struct{}
-	mu               sync.Mutex
+	mu               sync.RWMutex
+	mu2              sync.Mutex
 	Clients          *clients.Clients
+	udpBuffer        bytes.Buffer
+	kcpListener      *kcp.Listener
 }
 
 // Name of EdgeTunnel
@@ -292,6 +298,7 @@ func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig, cli *clients.Clients) (*EdgeTun
 		p2pHost:          h,
 		hostCtx:          ctx,
 		nodePeerMap:      make(map[string]*NodeInfo),
+		peerIDtoNodeName: make(map[peer.ID]string),
 		mdnsPeerChan:     mdnsPeerChan,
 		dhtPeerChan:      dhtPeerChan,
 		isRelay:          isRelay,
@@ -304,6 +311,7 @@ func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig, cli *clients.Clients) (*EdgeTun
 		nodeEventChan:    make(chan NodeEvent, 100),
 		disconnectChan:   make(chan struct{}, 1),
 		Clients:          cli,
+		udpBuffer:        bytes.Buffer{},
 	}
 
 	// run relay finder

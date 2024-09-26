@@ -597,7 +597,7 @@ func (lb *LoadBalancer) OnServiceDelete(service *v1.Service) {
 }
 
 func (lb *LoadBalancer) OnServiceSynced() {
-	klog.V(2).InfoS("LoadBalancer OnServiceSynced")
+	klog.InfoS("LoadBalancer OnServiceSynced")
 
 	// Mark services as initialized and (if endpoints are already
 	// initialized) the entire proxy as initialized
@@ -735,7 +735,7 @@ func (lb *LoadBalancer) OnEndpointsDelete(endpoints *v1.Endpoints) {
 }
 
 func (lb *LoadBalancer) OnEndpointsSynced() {
-	klog.V(2).InfoS(" OnEndpointsSynced")
+	klog.InfoS(" OnEndpointsSynced")
 
 	// Mark endpoints as initialized and (if services are already
 	// initialized) the entire proxy as initialized
@@ -1060,6 +1060,9 @@ func (lb *LoadBalancer) handleMessage(stopCh <-chan struct{}) {
 		}
 		switch msg.GetOperation() {
 		case messagepkg.NodeJoined:
+			if msg.GetSource() == "quickupdate" {
+				klog.Infof("从KCP收到消息%s, 检查节点状态", msg.GetContent())
+			}
 			endpoints, err := ParseJSONToEndpoints(msg.GetContent().(string))
 			if err != nil {
 				fmt.Println("Error:", err)
@@ -1083,7 +1086,7 @@ func (lb *LoadBalancer) handleMessage(stopCh <-chan struct{}) {
 			lb.RemoveEmptyEndpointsServices()
 			klog.Infof("离开%s节点后的Services信息：%v", nodeName, lb.services)
 
-		case "patchNotReady":
+		case messagepkg.PodPatch:
 			podname := msg.GetContent().(string)
 			for _, balancer := range lb.services {
 				lb.removePodByName(balancer, podname)

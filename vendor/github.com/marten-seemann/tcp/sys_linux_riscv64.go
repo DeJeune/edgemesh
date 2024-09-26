@@ -1,6 +1,4 @@
-//go:build linux && riscv64
-// +build linux,riscv64
-
+// + build linux, riscv64
 package tcp
 
 const (

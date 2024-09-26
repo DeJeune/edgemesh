@@ -41,6 +41,7 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/xtaci/kcp-go"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/yaml"
@@ -214,6 +215,7 @@ func (t *EdgeTunnel) discovery(discoverType defaults.DiscoveryType, pi peer.Addr
 			LastSeen: time.Now(),
 		}
 		t.nodePeerMap[nodeName] = nodeInfo
+		t.peerIDtoNodeName[pi.ID] = nodeName
 		klog.Infof("通过discovery:%s方法检测到节点%s已加入", protocol, nodeName)
 		t.nodeEventChan <- NodeEvent{EventName: EventNodeJoined, NodeName: nodeName, NodeEventInfo: *nodeInfo}
 	} else {
@@ -239,22 +241,25 @@ func (t *EdgeTunnel) checkNodeStatus() {
 	t.mu.Lock() // 使用互斥锁保护共享数据
 
 	var events []NodeEvent
-
+	klog.V(4).Infof("在时刻%s开始检查节点状态", now)
 	for nodeName, nodeInfo := range t.nodePeerMap {
 		if nodeInfo.Status == NodeStatusActive {
-			if !t.isNodeReachable(nodeInfo.PeerID) {
+			if false { // 测试用
 				nodeInfo.Status = NodeStatusInactive
 				nodeInfo.LastSeen = now
 				t.nodePeerMap[nodeName] = nodeInfo
 				events = append(events, NodeEvent{EventName: EventNodeLeft, NodeName: nodeName, NodeEventInfo: *nodeInfo})
+				klog.V(4).Infof("在时刻%s通过checkNodeStatus检测到节点%s已失联", time.Now().Format("2006-01-02 15:04:05.000"), nodeName)
 			}
+
 		} else if nodeInfo.Status == NodeStatusInactive {
 			if t.isNodeReachable(nodeInfo.PeerID) {
 				nodeInfo.Status = NodeStatusActive
 				nodeInfo.LastSeen = now
 				t.nodePeerMap[nodeName] = nodeInfo
-				klog.Infof("通过checkNodeStatus检测到节点%s已重新连接", nodeName)
+				klog.V(4).Infof("在时刻%s通过checkNodeStatus检测到节点%s已重新连接", time.Now().Format("2006-01-02 15:04:05.000"), nodeName)
 				events = append(events, NodeEvent{EventName: EventNodeJoined, NodeName: nodeName, NodeEventInfo: *nodeInfo})
+
 			}
 		}
 	}
@@ -264,14 +269,19 @@ func (t *EdgeTunnel) checkNodeStatus() {
 	// 异步发送事件
 	go func() {
 		for _, e := range events {
+			klog.Infof("在时刻%s，%s传入通道", time.Now().Format("2006-01-02 15:04:05.000"), e.EventName)
 			t.nodeEventChan <- e
 		}
 	}()
 }
 
 func (t *EdgeTunnel) isNodeReachable(peerID peer.ID) bool {
+	klog.V(6).Infof("在时刻%s开始检查节点%s是否可达", time.Now().Format("2006-01-02 15:04:05.000"), peerID)
 	ctx, cancel := context.WithTimeout(t.hostCtx, 3*time.Second)
-	defer cancel()
+	defer func() {
+		klog.V(6).Infof("在时刻%s检查节点%s是否可达结束", time.Now().Format("2006-01-02 15:04:05.000"), peerID)
+		cancel()
+	}()
 
 	// 使用 libp2p 的 ping 协议
 	p := ping.NewPingService(t.p2pHost)
@@ -353,13 +363,14 @@ func (t *EdgeTunnel) discoveryStreamHandler(stream network.Stream) {
 			LastSeen: time.Now(),
 		}
 		t.nodePeerMap[nodeName] = nodeInfo
-		klog.Infof("通过discoveryStreamHandler检测到节点%s已加入", nodeName)
+		t.peerIDtoNodeName[remotePeer.ID] = nodeName
+		klog.V(2).Infof("通过discoveryStreamHandler检测到节点%s已加入", nodeName)
 		t.nodeEventChan <- NodeEvent{EventName: EventNodeJoined, NodeName: nodeName, NodeEventInfo: *nodeInfo}
 	} else if nodeInfo.Status == NodeStatusInactive {
 		nodeInfo.Status = NodeStatusActive
 		nodeInfo.LastSeen = time.Now()
 		t.nodePeerMap[nodeName] = nodeInfo
-		klog.Infof("通过discoveryStreamHandler检测到节点%s已重新连接", nodeName)
+		klog.V(2).Infof("通过discoveryStreamHandler检测到节点%s已重新连接", nodeName)
 		t.nodeEventChan <- NodeEvent{EventName: EventNodeJoined, NodeName: nodeName, NodeEventInfo: *nodeInfo}
 	} else {
 		nodeInfo.LastSeen = time.Now()
@@ -840,11 +851,13 @@ func (t *EdgeTunnel) Run() {
 	go t.runConfigWatcher()
 	go t.broadcastMessage()
 	go t.handleIncomingMessages()
-	go t.checkNodeStatus()
 	go t.handleNodeEvents()
+	go t.monitorKCPPort(t.hostCtx)
+	go t.InterfaceMonitor()
 	t.setupConnectionManager()
 	t.runHeartbeat()
 	t.detectCloudNode()
+	t.StartCacheRefresher(defaults.EndpointsURL)
 }
 
 func (t *EdgeTunnel) runMetricsServer() {
@@ -1010,27 +1023,48 @@ func (t *EdgeTunnel) setupConnectionManager() {
 	klog.Infof("setupConnectionManager started")
 	t.p2pHost.Network().Notify(&network.NotifyBundle{
 		DisconnectedF: func(n network.Network, conn network.Conn) {
+			klog.V(2).Infof("在时刻%s，%s断开连接", time.Now().Format("2006-01-02 15:04:05.000"), conn.RemotePeer())
 			t.handleDisconnection(conn.RemotePeer())
-			t.checkNodeStatus() // 添加这行
 		},
 		ConnectedF: func(n network.Network, conn network.Conn) {
-			t.checkNodeStatus() // 添加这行
+			klog.V(2).Infof("在时刻%s，%s连接到我", time.Now().Format("2006-01-02 15:04:05.000"), conn.RemotePeer())
+			t.handleConnection(conn.RemotePeer())
 		},
 	})
+}
+
+func (t *EdgeTunnel) handleConnection(peerID peer.ID) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	nodeName, ok1 := t.peerIDtoNodeName[peerID]
+	nodeInfo, ok2 := t.nodePeerMap[nodeName]
+	if ok1 && ok2 {
+		if nodeInfo.Status == NodeStatusInactive {
+			nodeInfo.Status = NodeStatusActive
+			nodeInfo.LastSeen = time.Now()
+			t.nodePeerMap[nodeName] = nodeInfo
+			go func(name string, info NodeInfo) {
+				klog.Infof("在时刻%s，通过回调函数将节点%s的状态设置为活跃", time.Now().Format("2006-01-02 15:04:05.000"), name)
+				t.nodeEventChan <- NodeEvent{EventName: EventNodeJoined, NodeName: name, NodeEventInfo: info}
+			}(nodeName, *nodeInfo)
+		}
+	}
 }
 
 func (t *EdgeTunnel) handleDisconnection(peerID peer.ID) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	for nodeName, nodeInfo := range t.nodePeerMap {
-		if nodeInfo.PeerID == peerID {
+	nodeName, ok1 := t.peerIDtoNodeName[peerID]
+	nodeInfo, ok2 := t.nodePeerMap[nodeName]
+	if ok1 && ok2 {
+		if nodeInfo.Status == NodeStatusActive {
 			nodeInfo.Status = NodeStatusInactive
+			nodeInfo.LastSeen = time.Now()
 			t.nodePeerMap[nodeName] = nodeInfo
 			go func(name string, info NodeInfo) {
+				klog.V(2).Infof("在时刻%s，通过回调函数将节点%s的状态设置为不活跃", time.Now().Format("2006-01-02 15:04:05.000"), name)
 				t.nodeEventChan <- NodeEvent{EventName: EventNodeLeft, NodeName: name, NodeEventInfo: info}
 			}(nodeName, *nodeInfo)
-			break
 		}
 	}
 }
@@ -1285,12 +1319,12 @@ func (t *EdgeTunnel) handleNodeEvents() {
 	for e := range t.nodeEventChan {
 		go func(event NodeEvent) {
 			eventKey := fmt.Sprintf("%s-%s", event.EventName, event.NodeName)
-			t.mu.Lock()
+			t.mu2.Lock()
 			lastProcessed, exists := processedEvents[eventKey]
 			currentTime := time.Now()
 			if !exists || currentTime.Sub(lastProcessed) > deduplicationWindow {
 				processedEvents[eventKey] = currentTime
-				t.mu.Unlock()
+				t.mu2.Unlock()
 
 				// Process the event
 				currentTimeStr := currentTime.Format("2006-01-02 15:04:05.000")
@@ -1353,5 +1387,85 @@ func (t *EdgeTunnel) detectCloudNode() {
 			BuildRouter(t.Config.NodeName, "edgemesh", "service", messagepkg.DetectCloudNode).
 			FillBody(t.Config.NodeName)
 		beehiveContext.Send(defaults.EdgeTunnelModuleName, *msg)
+	}
+}
+
+func (t *EdgeTunnel) handleKCPConnection(ctx context.Context, conn *kcp.UDPSession) {
+	defer conn.Close()
+
+	// 设置一些KCP的参数
+	conn.SetStreamMode(true)
+	conn.SetWriteDelay(false)
+	conn.SetNoDelay(1, 10, 2, 1)
+	conn.SetMtu(1350)
+	conn.SetWindowSize(128, 128)
+	conn.SetACKNoDelay(true)
+
+	buf := make([]byte, 65507)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			// 设置读取超时
+			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			n, err := conn.Read(buf)
+			if err != nil {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					continue
+				}
+				klog.ErrorS(err, "Error reading from KCP connection")
+				return
+			}
+
+			t.mu.Lock()
+			t.udpBuffer.Write(buf[:n])
+			data := t.udpBuffer.Bytes()
+			if isValidJSON(data) {
+				klog.InfoS("Received complete KCP packet", "from", conn.RemoteAddr().String())
+
+				msg := model.NewMessage("").
+					BuildRouter("quickupdate", "edgemesh", "service", messagepkg.NodeJoined).
+					FillBody(string(data))
+
+				klog.Infof("从KCP收到消息%s, 检查节点状态", msg.GetContent())
+				beehiveContext.Send(defaults.EdgeProxyModuleName, *msg)
+
+				// Clear the buffer after processing
+				t.udpBuffer.Reset()
+			} else {
+				klog.Infof("Received incomplete KCP packet, from %s", conn.RemoteAddr().String())
+			}
+			t.mu.Unlock()
+		}
+	}
+}
+
+func (t *EdgeTunnel) monitorKCPPort(ctx context.Context) {
+	// 创建KCP监听器
+	listener, err := kcp.ListenWithOptions(broadcastAddr, nil, 0, 0)
+	if err != nil {
+		klog.ErrorS(err, "Failed to create KCP listener", "address", broadcastAddr)
+		return
+	}
+	t.kcpListener = listener
+	defer listener.Close()
+
+	klog.InfoS("Started listening on KCP", "address", broadcastAddr)
+
+	for {
+		select {
+		case <-ctx.Done():
+			klog.InfoS("Stopping KCP monitor")
+			return
+		default:
+			conn, err := listener.AcceptKCP()
+			if err != nil {
+				klog.ErrorS(err, "Error accepting KCP connection")
+				continue
+			}
+
+			go t.handleKCPConnection(ctx, conn)
+		}
 	}
 }

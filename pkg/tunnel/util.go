@@ -294,3 +294,43 @@ func isFilterInterfaces(iface string, filteredInterfaces []string) bool {
 	}
 	return false
 }
+
+func GetLocalIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		klog.Fatal(err)
+	}
+	for _, address := range addrs {
+		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				return ipnet.IP.String()
+			}
+		}
+	}
+	return ""
+}
+
+func isValidJSON(data []byte) bool {
+	stack := 0
+	inQuote := false
+	for _, b := range data {
+		switch b {
+		case '"':
+			if stack == 0 || data[stack-1] != '\\' {
+				inQuote = !inQuote
+			}
+		case '{', '[':
+			if !inQuote {
+				stack++
+			}
+		case '}', ']':
+			if !inQuote {
+				stack--
+				if stack < 0 {
+					return false
+				}
+			}
+		}
+	}
+	return stack == 0 && !inQuote
+}

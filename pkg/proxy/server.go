@@ -58,7 +58,7 @@ func NewDefaultKubeProxyConfiguration(bindAddress string) *proxyconfigapi.KubePr
 		},
 		UDPIdleTimeout:    metav1.Duration{Duration: 250 * time.Millisecond},
 		NodePortAddresses: nil,
-		ConfigSyncPeriod:  metav1.Duration{Duration: 15 * time.Minute},
+		ConfigSyncPeriod:  metav1.Duration{Duration: 60 * time.Minute},
 	}
 }
 
@@ -141,16 +141,13 @@ func (s *Server) Run() error {
 	serviceConfig := config.NewServiceConfig(informerFactory.Core().V1().Services(), s.ConfigSyncPeriod)
 	serviceConfig.RegisterEventHandler(s.Proxier)
 	// 调用的是syncProxyRules
-	if !s.isDisconnected {
-		go serviceConfig.Run(wait.NeverStop)
-	}
+
+	go serviceConfig.Run(wait.NeverStop)
 
 	if endpointsHandler, ok := s.Proxier.(config.EndpointsHandler); ok {
 		endpointsConfig := config.NewEndpointsConfig(informerFactory.Core().V1().Endpoints(), s.ConfigSyncPeriod)
 		endpointsConfig.RegisterEventHandler(endpointsHandler)
-		if !s.isDisconnected {
-			go endpointsConfig.Run(wait.NeverStop)
-		}
+		go endpointsConfig.Run(wait.NeverStop)
 	}
 
 	// This has to start after the calls to NewServiceConfig and NewEndpointsConfig because those

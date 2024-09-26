@@ -71,4 +71,6 @@ const (
 	TunnelBaseStreamOut     int = 10240
 	TunnelPeerBaseStreamIn  int = 1024
 	TunnelPeerBaseStreamOut int = 1024
+
+	EndpointsURL string = MetaServerAddress + "/api/v1/endpoints"
 )

@@ -307,6 +307,9 @@ github.com/klauspost/compress/zstd/internal/xxhash
 # github.com/klauspost/cpuid/v2 v2.2.5
 ## explicit; go 1.15
 github.com/klauspost/cpuid/v2
+# github.com/klauspost/reedsolomon v1.10.0
+## explicit; go 1.15
+github.com/klauspost/reedsolomon
 # github.com/koron/go-ssdp v0.0.4
 ## explicit; go 1.19
 github.com/koron/go-ssdp
@@ -700,9 +703,18 @@ github.com/spf13/cobra
 # github.com/spf13/pflag v1.0.5
 ## explicit; go 1.12
 github.com/spf13/pflag
+# github.com/templexxx/cpufeat v0.0.0-20180724012125-cef66df7f161
+## explicit
+github.com/templexxx/cpufeat
+# github.com/templexxx/xor v0.0.0-20191217153810-f85b25db303b
+## explicit
+github.com/templexxx/xor
 # github.com/tinylib/msgp v1.1.2
 ## explicit
 github.com/tinylib/msgp/msgp
+# github.com/tjfoc/gmsm v1.4.1
+## explicit; go 1.14
+github.com/tjfoc/gmsm/sm4
 # github.com/vishvananda/netlink v1.1.1-0.20201029203352-d40f9887b852
 ## explicit; go 1.12
 github.com/vishvananda/netlink
@@ -713,6 +725,11 @@ github.com/vishvananda/netns
 # github.com/whyrusleeping/go-keyspace v0.0.0-20160322163242-5b898ac5add1
 ## explicit
 github.com/whyrusleeping/go-keyspace
+# github.com/xtaci/kcp-go v5.4.20+incompatible
+## explicit
+github.com/xtaci/kcp-go
+# github.com/xtaci/lossyconn v0.0.0-20190602105132-8df528c0c9ae
+## explicit
 # go.opencensus.io v0.24.0
 ## explicit; go 1.13
 go.opencensus.io
@@ -763,6 +780,8 @@ go.uber.org/zap/zapcore
 ## explicit; go 1.17
 golang.org/x/crypto/blake2b
 golang.org/x/crypto/blake2s
+golang.org/x/crypto/blowfish
+golang.org/x/crypto/cast5
 golang.org/x/crypto/chacha20
 golang.org/x/crypto/chacha20poly1305
 golang.org/x/crypto/cryptobyte
@@ -772,8 +791,13 @@ golang.org/x/crypto/curve25519/internal/field
 golang.org/x/crypto/hkdf
 golang.org/x/crypto/internal/alias
 golang.org/x/crypto/internal/poly1305
+golang.org/x/crypto/pbkdf2
+golang.org/x/crypto/salsa20
 golang.org/x/crypto/salsa20/salsa
 golang.org/x/crypto/sha3
+golang.org/x/crypto/tea
+golang.org/x/crypto/twofish
+golang.org/x/crypto/xtea
 # golang.org/x/exp v0.0.0-20230321023759-10a507213a29
 ## explicit; go 1.18
 golang.org/x/exp/constraints

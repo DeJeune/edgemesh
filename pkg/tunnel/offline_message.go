@@ -3,41 +3,32 @@ package tunnel
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
-	"net/http"
 
 	"github.com/kubeedge/beehive/pkg/core/model"
 	v1 "k8s.io/api/core/v1"
 )
 
 func FetchFormattedJSONFromURL(url string) (string, error) {
-	// 发送 GET 请求到指定的 URL
-	resp, err := http.Get(url)
-	if err != nil {
-		return "", fmt.Errorf("请求失败: %v", err)
+	cacheMutex.Lock()
+	cacheData, found := GetCache(url)
+	cacheMutex.Unlock()
+	if found {
+		return cacheData, nil
 	}
-	defer resp.Body.Close()
-
-	// 读取响应体
-	body, err := ioutil.ReadAll(resp.Body)
+	// 如果缓存中没有数据，则刷新缓存
+	err := RefreshCache(url)
 	if err != nil {
-		return "", fmt.Errorf("读取响应数据失败: %v", err)
+		return "", err
 	}
+	// 再次尝试从缓存中获取数据
+	cacheMutex.Lock()
+	cacheData, found = GetCache(url)
+	cacheMutex.Unlock()
 
-	// 将响应数据解析为 JSON 格式
-	var jsonData interface{}
-	err = json.Unmarshal(body, &jsonData)
-	if err != nil {
-		return "", fmt.Errorf("JSON 解码失败: %v", err)
+	if found {
+		return cacheData, nil
 	}
-
-	// 将解析后的 JSON 数据格式化为字符串
-	formattedJSON, err := json.MarshalIndent(jsonData, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("格式化 JSON 数据失败: %v", err)
-	}
-
-	return string(formattedJSON), nil
+	return "", fmt.Errorf("无法获取数据")
 }
 
 func (t *EdgeTunnel) BuildselfEndpointsMsg() (*model.Message, error) {
@@ -56,18 +47,18 @@ func (t *EdgeTunnel) BuildselfEndpointsMsg() (*model.Message, error) {
 	// 构建消息对象
 	message := model.NewMessage("").
 		BuildRouter(t.Config.NodeName, "edgemesh", "service", "internalJoin").
-		FillBody(filteredEndpoints)
+		FillBody(string(filteredEndpoints))
 
 	return message, nil
 }
 
 // filterEndpointsByNodeName 过滤 Endpoints，保留指定 nodeName 的 address。
 // 如果 address 为空，则删除整个 Endpoints 对象。
-func filterEndpointsByNodeName(jsonStr string, targetNodeName string) (string, error) {
+func filterEndpointsByNodeName(jsonStr string, targetNodeName string) ([]byte, error) {
 	var endpointsList v1.EndpointsList
 	err := json.Unmarshal([]byte(jsonStr), &endpointsList)
 	if err != nil {
-		return "", fmt.Errorf("error unmarshalling JSON: %v", err)
+		return nil, fmt.Errorf("error unmarshalling JSON: %v", err)
 	}
 
 	filteredItems := []v1.Endpoints{}
@@ -105,8 +96,8 @@ func filterEndpointsByNodeName(jsonStr string, targetNodeName string) (string, e
 	// 将过滤后的 EndpointsList 序列化回 JSON
 	filteredJSON, err := json.MarshalIndent(endpointsList, "", "  ")
 	if err != nil {
-		return "", fmt.Errorf("error marshalling filtered JSON: %v", err)
+		return nil, fmt.Errorf("error marshalling filtered JSON: %v", err)
 	}
 
-	return string(filteredJSON), nil
+	return filteredJSON, nil
 }

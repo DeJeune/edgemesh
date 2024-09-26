@@ -345,3 +345,22 @@ func TestGetIPsFromInterfaces(t *testing.T) {
 		})
 	}
 }
+
+func TestGetLocalIP(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+	}{
+		{
+			name: "test1",
+			want: "192.168.11.89",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := GetLocalIP(); got != tt.want {
+				t.Errorf("GetLocalIP() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

@@ -27,6 +27,7 @@ require (
 	github.com/spf13/cobra v1.2.1
 	github.com/spf13/pflag v1.0.5
 	github.com/vishvananda/netlink v1.1.1-0.20201029203352-d40f9887b852
+	github.com/xtaci/kcp-go v5.4.20+incompatible
 	istio.io/api v0.0.0-20220124163811-3adce9124ae7
 	istio.io/client-go v1.12.3
 	k8s.io/api v0.23.1
@@ -97,6 +98,7 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.16.5 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.5 // indirect
+	github.com/klauspost/reedsolomon v1.10.0 // indirect
 	github.com/koron/go-ssdp v0.0.4 // indirect
 	github.com/kubeedge/viaduct v0.0.0 // indirect
 	github.com/libp2p/go-buffer-pool v0.1.0 // indirect
@@ -153,9 +155,13 @@ require (
 	github.com/quic-go/webtransport-go v0.5.3 // indirect
 	github.com/raulk/go-watchdog v1.3.0 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
+	github.com/templexxx/cpufeat v0.0.0-20180724012125-cef66df7f161 // indirect
+	github.com/templexxx/xor v0.0.0-20191217153810-f85b25db303b // indirect
 	github.com/tinylib/msgp v1.1.2 // indirect
+	github.com/tjfoc/gmsm v1.4.1 // indirect
 	github.com/vishvananda/netns v0.0.0-20200728191858-db3c7e526aae // indirect
 	github.com/whyrusleeping/go-keyspace v0.0.0-20160322163242-5b898ac5add1 // indirect
+	github.com/xtaci/lossyconn v0.0.0-20190602105132-8df528c0c9ae // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/dig v1.17.0 // indirect
