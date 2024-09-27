@@ -35,7 +35,10 @@ func (lb *LoadBalancer) removeNodeByName(state *balancerState, nodeNameToRemove 
 		}
 
 		nodeName := parts[0]
-		if nodeName != nodeNameToRemove {
+		if nodeName == nodeNameToRemove {
+			// 打印出被舍弃的端点信息
+			klog.Infof("删除的服务信息: %s", endpoint)
+		} else {
 			// 保留不是要删除的节点
 			updatedEndpoints = append(updatedEndpoints, endpoint)
 		}
@@ -93,6 +96,7 @@ func (lb *LoadBalancer) mergeEndpoints(endpoints *v1.Endpoints) {
 			// 如果服务存在，则合并新的和旧的 endpoints
 			klog.InfoS("合并新的Endpoints到Services", "servicePortName", svcPort, "newEndpoints", newEndpoints)
 			// 将旧的和新的 endpoints 合并并去重
+			klog.InfoS("此时存在服务：", lb.services[svcPort])
 			endpointSet := make(map[string]struct{})
 			for _, ep := range state.endpoints {
 				endpointSet[ep] = struct{}{}
