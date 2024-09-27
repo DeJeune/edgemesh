@@ -857,7 +857,6 @@ func (t *EdgeTunnel) Run() {
 	t.setupConnectionManager()
 	t.runHeartbeat()
 	t.detectCloudNode()
-	t.StartCacheRefresher(defaults.EndpointsURL)
 }
 
 func (t *EdgeTunnel) runMetricsServer() {
@@ -1027,8 +1026,8 @@ func (t *EdgeTunnel) setupConnectionManager() {
 			t.handleDisconnection(conn.RemotePeer())
 		},
 		ConnectedF: func(n network.Network, conn network.Conn) {
-			klog.V(2).Infof("在时刻%s，%s连接到我", time.Now().Format("2006-01-02 15:04:05.000"), conn.RemotePeer())
-			t.handleConnection(conn.RemotePeer())
+			// klog.V(2).Infof("在时刻%s，%s连接到我", time.Now().Format("2006-01-02 15:04:05.000"), conn.RemotePeer())
+			// t.handleConnection(conn.RemotePeer())
 		},
 	})
 }
@@ -1256,7 +1255,7 @@ func (t *EdgeTunnel) broadcastMessage() error {
 			return false, nil // continue polling
 		}
 
-		klog.Infof("Received message to %s: %+v", defaults.EdgeTunnelModuleName, msg)
+		//klog.Infof("Received message to %s: %+v", defaults.EdgeTunnelModuleName, msg)
 		data, err := json.Marshal(msg)
 		if err != nil {
 			klog.Errorf("Failed to marshal message: %v", err)
@@ -1299,7 +1298,7 @@ func (t *EdgeTunnel) handleIncomingMessages() error {
 			}
 		}
 
-		klog.Infof("Received message from %s: %+v", msg.ReceivedFrom, receivedMsg)
+		klog.Infof("Received message from %s: %+v", msg.ReceivedFrom, receivedMsg.String())
 		// Add your logic to handle the received message here
 		if receivedMsg.GetOperation() == messagepkg.DetectCloudNode {
 			t.CloudNode = receivedMsg.GetContent().(string)
@@ -1327,10 +1326,10 @@ func (t *EdgeTunnel) handleNodeEvents() {
 				t.mu2.Unlock()
 
 				// Process the event
-				currentTimeStr := currentTime.Format("2006-01-02 15:04:05.000")
+				//currentTimeStr := currentTime.Format("2006-01-02 15:04:05.000")
 				switch event.EventName {
 				case EventNodeJoined:
-					klog.Infof("Node joined event received at %s", currentTimeStr)
+					//klog.Infof("Node joined event received at %s", currentTimeStr)
 					klog.Infof("Node joined: %s", event.NodeName)
 
 					if event.NodeName == t.CloudNode {
@@ -1340,36 +1339,35 @@ func (t *EdgeTunnel) handleNodeEvents() {
 								"isSync": true,
 							})
 						beehiveContext.Send(defaults.EdgeProxyModuleName, *msg)
+						t.isCloudNodeOnline = true
 					}
 
-					if v1alpha1.DetectRunningMode() != defaults.CloudMode {
-						msg, err := t.BuildselfEndpointsMsg()
-						if err != nil {
-							klog.Errorf("Failed to build msg: %v", err)
-						} else {
-							klog.Infof("[%s]: 成功创建本机的Endpoints信息%s", defaults.EdgeTunnelModuleName, msg.Header)
-							beehiveContext.Send(defaults.EdgeTunnelModuleName, *msg)
+					if !t.isCloudNodeOnline {
+						if v1alpha1.DetectRunningMode() != defaults.CloudMode {
+							msg, err := t.BuildselfEndpointsMsg()
+							if err != nil {
+								klog.Errorf("Failed to build msg: %v", err)
+							} else {
+								//klog.Infof("[%s]: 成功创建本机的Endpoints信息%s", defaults.EdgeTunnelModuleName, msg.Header)
+								beehiveContext.Send(defaults.EdgeTunnelModuleName, *msg)
+							}
 						}
 					}
-
 				case EventNodeLeft:
-					klog.Infof("Node left event received at %s", currentTimeStr)
+					//klog.Infof("Node left event received at %s", currentTimeStr)
 					klog.Infof("Node left: %s", event.NodeName)
 
 					if event.NodeName == t.CloudNode {
-						msg := model.NewMessage("").
-							BuildRouter(t.Config.NodeName, "edgemesh", "config", messagepkg.IsSync).
-							FillBody(map[string]interface{}{
-								"isSync": false,
-							})
-						beehiveContext.Send(defaults.EdgeProxyModuleName, *msg)
+						klog.Infof("云节点%s离线", event.NodeName)
+						t.isCloudNodeOnline = false
 					}
-
-					if v1alpha1.DetectRunningMode() != defaults.CloudMode {
-						msg := model.NewMessage("").
-							BuildRouter(t.Config.NodeName, "edgemesh", "service", messagepkg.NodeLeft).
-							FillBody(event.NodeName)
-						beehiveContext.Send(defaults.EdgeProxyModuleName, *msg)
+					if !t.isCloudNodeOnline {
+						if v1alpha1.DetectRunningMode() != defaults.CloudMode {
+							msg := model.NewMessage("").
+								BuildRouter(t.Config.NodeName, "edgemesh", "service", messagepkg.NodeLeft).
+								FillBody(event.NodeName)
+							beehiveContext.Send(defaults.EdgeProxyModuleName, *msg)
+						}
 					}
 				}
 			} else {
@@ -1387,6 +1385,7 @@ func (t *EdgeTunnel) detectCloudNode() {
 			BuildRouter(t.Config.NodeName, "edgemesh", "service", messagepkg.DetectCloudNode).
 			FillBody(t.Config.NodeName)
 		beehiveContext.Send(defaults.EdgeTunnelModuleName, *msg)
+		klog.Infof("云节点是%s", t.Config.NodeName)
 	}
 }
 
@@ -1414,7 +1413,7 @@ func (t *EdgeTunnel) handleKCPConnection(ctx context.Context, conn *kcp.UDPSessi
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 					continue
 				}
-				klog.ErrorS(err, "Error reading from KCP connection")
+				//klog.ErrorS(err, "Error reading from KCP connection")
 				return
 			}
 
@@ -1422,19 +1421,19 @@ func (t *EdgeTunnel) handleKCPConnection(ctx context.Context, conn *kcp.UDPSessi
 			t.udpBuffer.Write(buf[:n])
 			data := t.udpBuffer.Bytes()
 			if isValidJSON(data) {
-				klog.InfoS("Received complete KCP packet", "from", conn.RemoteAddr().String())
+				klog.V(1).InfoS("Received complete KCP packet", "from", conn.RemoteAddr().String())
 
 				msg := model.NewMessage("").
 					BuildRouter("quickupdate", "edgemesh", "service", messagepkg.NodeJoined).
 					FillBody(string(data))
 
-				klog.Infof("从KCP收到消息%s, 检查节点状态", msg.GetContent())
+				klog.Infof("通过UDP收到消息%s", msg.String())
 				beehiveContext.Send(defaults.EdgeProxyModuleName, *msg)
 
 				// Clear the buffer after processing
 				t.udpBuffer.Reset()
 			} else {
-				klog.Infof("Received incomplete KCP packet, from %s", conn.RemoteAddr().String())
+				klog.V(1).Infof("Received incomplete KCP packet, from %s", conn.RemoteAddr().String())
 			}
 			t.mu.Unlock()
 		}

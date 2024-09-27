@@ -3,32 +3,49 @@ package tunnel
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"net/http"
+	"time"
 
 	"github.com/kubeedge/beehive/pkg/core/model"
 	v1 "k8s.io/api/core/v1"
 )
 
 func FetchFormattedJSONFromURL(url string) (string, error) {
-	cacheMutex.Lock()
-	cacheData, found := GetCache(url)
-	cacheMutex.Unlock()
-	if found {
+	cacheData, timestamp, found := GetCache(url)
+	if found && time.Since(timestamp) < 30*time.Minute {
 		return cacheData, nil
 	}
-	// 如果缓存中没有数据，则刷新缓存
-	err := RefreshCache(url)
+	// 发送 GET 请求到指定的 URL
+	resp, err := http.Get(url)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("请求失败: %v", err)
 	}
-	// 再次尝试从缓存中获取数据
-	cacheMutex.Lock()
-	cacheData, found = GetCache(url)
-	cacheMutex.Unlock()
+	defer resp.Body.Close()
 
-	if found {
-		return cacheData, nil
+	// 读取响应体
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("读取响应数据失败: %v", err)
 	}
-	return "", fmt.Errorf("无法获取数据")
+
+	// 将响应数据解析为 JSON 格式
+	var jsonData interface{}
+	err = json.Unmarshal(body, &jsonData)
+	if err != nil {
+		return "", fmt.Errorf("JSON 解码失败: %v", err)
+	}
+
+	// 将解析后的 JSON 数据格式化为字符串
+	formattedJSON, err := json.MarshalIndent(jsonData, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("格式化 JSON 数据失败: %v", err)
+	}
+
+	// 更新缓存
+	SetCache(url, string(formattedJSON))
+
+	return string(formattedJSON), nil
 }
 
 func (t *EdgeTunnel) BuildselfEndpointsMsg() (*model.Message, error) {

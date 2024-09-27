@@ -64,30 +64,31 @@ const (
 
 // EdgeTunnel is used for solving cross subset communication
 type EdgeTunnel struct {
-	Config           *v1alpha1.EdgeTunnelConfig
-	CloudNode        string
-	p2pHost          p2phost.Host         // libp2p host
-	hostCtx          context.Context      // ctx governs the lifetime of the libp2p host
-	nodePeerMap      map[string]*NodeInfo // map of Kubernetes node name and peer.ID
-	peerIDtoNodeName map[peer.ID]string
-	mdnsPeerChan     chan peer.AddrInfo
-	dhtPeerChan      <-chan peer.AddrInfo
-	isRelay          bool
-	relayMap         RelayMap
-	relayService     *relayv2.Relay
-	holepunchService *holepunch.Service
-	stopCh           chan struct{}
-	cfgWatcher       *fsnotify.Watcher
-	pubSub           *pubsub.PubSub
-	Topic            *pubsub.Topic
-	Sub              *pubsub.Subscription
-	nodeEventChan    chan NodeEvent
-	disconnectChan   chan struct{}
-	mu               sync.RWMutex
-	mu2              sync.Mutex
-	Clients          *clients.Clients
-	udpBuffer        bytes.Buffer
-	kcpListener      *kcp.Listener
+	Config            *v1alpha1.EdgeTunnelConfig
+	CloudNode         string
+	p2pHost           p2phost.Host         // libp2p host
+	hostCtx           context.Context      // ctx governs the lifetime of the libp2p host
+	nodePeerMap       map[string]*NodeInfo // map of Kubernetes node name and peer.ID
+	peerIDtoNodeName  map[peer.ID]string
+	mdnsPeerChan      chan peer.AddrInfo
+	dhtPeerChan       <-chan peer.AddrInfo
+	isRelay           bool
+	relayMap          RelayMap
+	relayService      *relayv2.Relay
+	holepunchService  *holepunch.Service
+	stopCh            chan struct{}
+	cfgWatcher        *fsnotify.Watcher
+	pubSub            *pubsub.PubSub
+	Topic             *pubsub.Topic
+	Sub               *pubsub.Subscription
+	nodeEventChan     chan NodeEvent
+	disconnectChan    chan struct{}
+	mu                sync.RWMutex
+	mu2               sync.Mutex
+	Clients           *clients.Clients
+	udpBuffer         bytes.Buffer
+	kcpListener       *kcp.Listener
+	isCloudNodeOnline bool
 }
 
 // Name of EdgeTunnel
@@ -294,24 +295,26 @@ func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig, cli *clients.Clients) (*EdgeTun
 	}
 
 	edgeTunnel := &EdgeTunnel{
-		Config:           c,
-		p2pHost:          h,
-		hostCtx:          ctx,
-		nodePeerMap:      make(map[string]*NodeInfo),
-		peerIDtoNodeName: make(map[peer.ID]string),
-		mdnsPeerChan:     mdnsPeerChan,
-		dhtPeerChan:      dhtPeerChan,
-		isRelay:          isRelay,
-		relayMap:         relayMap,
-		relayService:     relayService,
-		holepunchService: holepunchService,
-		stopCh:           make(chan struct{}),
-		cfgWatcher:       watcher,
-		pubSub:           ps,
-		nodeEventChan:    make(chan NodeEvent, 100),
-		disconnectChan:   make(chan struct{}, 1),
-		Clients:          cli,
-		udpBuffer:        bytes.Buffer{},
+		Config:            c,
+		p2pHost:           h,
+		hostCtx:           ctx,
+		nodePeerMap:       make(map[string]*NodeInfo),
+		peerIDtoNodeName:  make(map[peer.ID]string),
+		mdnsPeerChan:      mdnsPeerChan,
+		dhtPeerChan:       dhtPeerChan,
+		isRelay:           isRelay,
+		relayMap:          relayMap,
+		relayService:      relayService,
+		holepunchService:  holepunchService,
+		stopCh:            make(chan struct{}),
+		cfgWatcher:        watcher,
+		pubSub:            ps,
+		nodeEventChan:     make(chan NodeEvent, 100),
+		disconnectChan:    make(chan struct{}, 1),
+		Clients:           cli,
+		udpBuffer:         bytes.Buffer{},
+		isCloudNodeOnline: true,
+		CloudNode:         "cloud",
 	}
 
 	// run relay finder

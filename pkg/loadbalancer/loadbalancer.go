@@ -969,7 +969,7 @@ func (lb *LoadBalancer) dialEndpoint(protocol, endpoint string) (net.Conn, error
 		if err != nil {
 			return nil, fmt.Errorf("get proxy stream from %s error: %v", targetNode, err)
 		}
-		klog.Infof("Dial libp2p network between %s - {%s %s %s:%d}", targetPod, protocol, targetNode, targetIP, targetPort)
+		klog.Infof("连接服务Pod %s - {%s %s %s:%d}", targetPod, protocol, targetNode, targetIP, targetPort)
 		return streamConn, nil
 	}
 }
@@ -1060,9 +1060,6 @@ func (lb *LoadBalancer) handleMessage(stopCh <-chan struct{}) {
 		}
 		switch msg.GetOperation() {
 		case messagepkg.NodeJoined:
-			if msg.GetSource() == "quickupdate" {
-				klog.Infof("从KCP收到消息%s, 检查节点状态", msg.GetContent())
-			}
 			endpoints, err := ParseJSONToEndpoints(msg.GetContent().(string))
 			if err != nil {
 				fmt.Println("Error:", err)
@@ -1073,10 +1070,14 @@ func (lb *LoadBalancer) handleMessage(stopCh <-chan struct{}) {
 				lb.removeNodeByName(balancer, nodename)
 			}
 			for _, ep := range endpoints {
-				klog.Infof("添加Endpoints信息,Name=%s, Namespace=%s\n", ep.Name, ep.Namespace)
+				//klog.Infof("添加服务信息,Name=%s, Namespace=%s\n", ep.Name, ep.Namespace)
 				lb.mergeEndpoints(&ep)
 			}
-			klog.Infof("当前Endpoints信息：%v", lb.services)
+			if msg.GetSource() == "quickupdate" {
+				klog.Infof("通过UDP进行快速服务发现,当前服务信息: %v", lb.services)
+			} else {
+				klog.Infof("通过回调函数进行发现，当前服务信息：%v", lb.services)
+			}
 
 		case messagepkg.NodeLeft:
 			nodeName := msg.GetContent().(string)
@@ -1084,15 +1085,15 @@ func (lb *LoadBalancer) handleMessage(stopCh <-chan struct{}) {
 				lb.removeNodeByName(balancer, nodeName)
 			}
 			lb.RemoveEmptyEndpointsServices()
-			klog.Infof("离开%s节点后的Services信息：%v", nodeName, lb.services)
+			klog.Infof("离开%s节点后的服务信息：%v", nodeName, lb.services)
 
 		case messagepkg.PodPatch:
-			podname := msg.GetContent().(string)
-			for _, balancer := range lb.services {
-				lb.removePodByName(balancer, podname)
-			}
-			lb.RemoveEmptyEndpointsServices()
-			klog.Infof("Pod%s发生故障", podname)
+			// podname := msg.GetContent().(string)
+			// for _, balancer := range lb.services {
+			// 	lb.removePodByName(balancer, podname)
+			// }
+			// lb.RemoveEmptyEndpointsServices()
+			// klog.Infof("Pod%s发生故障", podname)
 
 		case "patchReady":
 			endpoints, err := ParseJSONToEndpoints(msg.GetContent().(string))
