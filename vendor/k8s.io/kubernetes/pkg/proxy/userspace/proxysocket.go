@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/proxy"
@@ -75,7 +75,8 @@ func newProxySocket(protocol v1.Protocol, ip net.IP, port int) (ProxySocket, err
 }
 
 // How long we wait for a connection to a backend in seconds
-var EndpointDialTimeouts = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, 1 * time.Second, 2 * time.Second}
+// var EndpointDialTimeouts = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, 1 * time.Second, 2 * time.Second}
+var EndpointDialTimeouts = []time.Duration{250 * time.Millisecond}
 
 // tcpProxySocket implements ProxySocket.  Close() is implemented by net.Listener.  When Close() is called,
 // no new connections are allowed but existing connections are left untouched.
@@ -110,6 +111,7 @@ func TryConnectEndpoints(service proxy.ServicePortName, srcAddr net.Addr, protoc
 			sessionAffinityReset = true
 			continue
 		}
+
 		return outConn, nil
 	}
 	return nil, fmt.Errorf("failed to connect to an endpoint")

@@ -957,7 +957,7 @@ func (lb *LoadBalancer) dialEndpoint(protocol, endpoint string) (net.Conn, error
 		if err != nil {
 			return nil, err
 		}
-		klog.Infof("Dial legacy network between %s - {%s %s %s:%s}", targetPod, protocol, targetNode, targetIP, targetPort)
+		klog.Infof("%s连接服务Pod %s - {%s %s %s:%s}", time.Now().Format("2006-01-02 15:04:05.000"), targetPod, protocol, targetNode, targetIP, targetPort)
 		return outConn, nil
 	default:
 		targetPort, err := strconv.ParseInt(targetPort, 10, 32)
@@ -969,7 +969,7 @@ func (lb *LoadBalancer) dialEndpoint(protocol, endpoint string) (net.Conn, error
 		if err != nil {
 			return nil, fmt.Errorf("get proxy stream from %s error: %v", targetNode, err)
 		}
-		klog.Infof("连接服务Pod %s - {%s %s %s:%d}", targetPod, protocol, targetNode, targetIP, targetPort)
+		klog.Infof("%s连接服务Pod %s - {%s %s %s:%d}", time.Now().Format("2006-01-02 15:04:05.000"), targetPod, protocol, targetNode, targetIP, targetPort)
 		return streamConn, nil
 	}
 }

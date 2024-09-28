@@ -56,7 +56,7 @@ func newDefaultEdgeTunnelConfig(configPath string) *EdgeTunnelConfig {
 		Rendezvous:      defaults.Rendezvous,
 		EnableIpfsLog:   false,
 		MaxCandidates:   15,
-		HeartbeatPeriod: 15,
+		HeartbeatPeriod: 60,
 		FinderPeriod:    60,
 		PSK: &PSK{
 			Enable: true,

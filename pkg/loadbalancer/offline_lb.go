@@ -96,7 +96,7 @@ func (lb *LoadBalancer) mergeEndpoints(endpoints *v1.Endpoints) {
 			// 如果服务存在，则合并新的和旧的 endpoints
 			klog.InfoS("合并新的Endpoints到Services", "servicePortName", svcPort, "newEndpoints", newEndpoints)
 			// 将旧的和新的 endpoints 合并并去重
-			klog.InfoS("此时存在服务：", lb.services[svcPort])
+			//klog.InfoS("此时存在服务：", lb.services[svcPort])
 			endpointSet := make(map[string]struct{})
 			for _, ep := range state.endpoints {
 				endpointSet[ep] = struct{}{}
