@@ -1074,9 +1074,7 @@ func (lb *LoadBalancer) handleMessage(stopCh <-chan struct{}) {
 				lb.mergeEndpoints(&ep)
 			}
 			if msg.GetSource() == "quickupdate" {
-				klog.Infof("通过UDP进行快速服务发现,当前服务信息: %v,此时快速加入服务操作完成", lb.services)
-			} else {
-				klog.Infof("通过回调函数进行发现，当前服务信息：%v", lb.services)
+				klog.Infof("通过UDP进行快速服务发现,此时快速加入服务操作完成")
 			}
 
 		case messagepkg.NodeLeft:

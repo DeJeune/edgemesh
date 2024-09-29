@@ -75,8 +75,9 @@ func newProxySocket(protocol v1.Protocol, ip net.IP, port int) (ProxySocket, err
 }
 
 // How long we wait for a connection to a backend in seconds
-// var EndpointDialTimeouts = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, 1 * time.Second, 2 * time.Second}
-var EndpointDialTimeouts = []time.Duration{250 * time.Millisecond}
+var EndpointDialTimeouts = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, 1 * time.Second, 2 * time.Second}
+
+// var EndpointDialTimeouts = []time.Duration{250 * time.Millisecond}
 
 // tcpProxySocket implements ProxySocket.  Close() is implemented by net.Listener.  When Close() is called,
 // no new connections are allowed but existing connections are left untouched.
