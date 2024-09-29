@@ -1083,7 +1083,7 @@ func (lb *LoadBalancer) handleMessage(stopCh <-chan struct{}) {
 				lb.removeNodeByName(balancer, nodeName)
 			}
 			lb.RemoveEmptyEndpointsServices()
-			klog.Infof("离开%s节点后的服务信息：%v", nodeName, lb.services)
+			klog.Infof("%s节点相关服务已删除", nodeName)
 
 		case messagepkg.PodPatch:
 			// podname := msg.GetContent().(string)
